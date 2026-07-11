@@ -2513,12 +2513,65 @@
 		if self.hasInit then return end
 		self.hasInit = true
 
-		self.base = library:Create("ScreenGui", {IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Global})
-		if runService:IsStudio() then
-			self.base.Parent = script.Parent.Parent
-		elseif syn then
-			pcall(function() syn.protect_gui(self.base) end)
-			self.base.Parent = game:GetService"CoreGui"
+		self.base = library:Create("ScreenGui", {
+			Name = "uwuware_ui",
+			IgnoreGuiInset = true,
+			ResetOnSpawn = false,
+			ZIndexBehavior = Enum.ZIndexBehavior.Global
+		})
+
+		-- Executor-compatible GUI parenting. Older uwuware builds only
+		-- parented the ScreenGui when the executor exposed `syn`, leaving
+		-- the UI invisible in executors that use gethui/get_hidden_gui.
+		local function getUIParent()
+			local candidates = {
+				gethui,
+				get_hidden_gui,
+				gethiddengui
+			}
+
+			for _, getter in ipairs(candidates) do
+				if typeof(getter) == "function" then
+					local success, parent = pcall(getter)
+					if success and typeof(parent) == "Instance" then
+						return parent
+					end
+				end
+			end
+
+			if runService:IsStudio() then
+				local success, parent = pcall(function()
+					return script.Parent.Parent
+				end)
+				if success and typeof(parent) == "Instance" then
+					return parent
+				end
+			end
+
+			return game:GetService("CoreGui")
+		end
+
+		if syn and typeof(syn.protect_gui) == "function" then
+			pcall(function()
+				syn.protect_gui(self.base)
+			end)
+		elseif typeof(protectgui) == "function" then
+			pcall(function()
+				protectgui(self.base)
+			end)
+		end
+
+		local parentSuccess, parentError = pcall(function()
+			self.base.Parent = getUIParent()
+		end)
+
+		if not parentSuccess then
+			warn("[uwuware] Failed to parent UI:", parentError)
+			self.hasInit = false
+			pcall(function()
+				self.base:Destroy()
+			end)
+			return
 		end
 
 		self.main = self:Create("ImageButton", {
