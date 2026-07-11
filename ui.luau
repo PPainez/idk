@@ -52,7 +52,7 @@
 	local library = {
 		__xanhub = true,
 		brand = "xanhub",
-		version = "3.1.0",
+		version = "3.2.0",
 		design = "xanhub",
 		tabs = {},
 		draggable = true,
@@ -74,7 +74,12 @@
 		defaultAccent = DEFAULT_ACCENT,
 		palette = PALETTE,
 		windowHeight = 600,
+		minimumWindowHeight = 250,
+		maximumWindowHeight = 600,
 		minimumWindowWidth = 494,
+		minimumColumnWidth = 220,
+		preferredColumnWidth = 285,
+		columnGap = 8,
 		userScale = 1,
 		autoScale = 1,
 	}
@@ -587,13 +592,27 @@
 			Parent = parent
 		})
 
+		local function reflow()
+			if not option.main or not option.main.Parent then return end
+			local width = math.max(80, option.main.AbsoluteSize.X)
+			local bounds = textService:GetTextSize(option.main.Text, 15, Enum.Font.Code, Vector2.new(width, 9e9))
+			option.main.Size = UDim2.new(1, -12, 0, math.max(20, bounds.Y + 6))
+		end
+
 		setmetatable(option, {__newindex = function(t, i, v)
 			if i == "Text" then
 				option.main.Text = tostring(v)
-				option.main.Size = UDim2.new(1, -12, 0, textService:GetTextSize(option.main.Text, 15, Enum.Font.Code, Vector2.new(option.main.AbsoluteSize.X, 9e9)).Y + 6)
+				task.defer(reflow)
+			else
+				rawset(t, i, v)
 			end
 		end})
+
+		library:AddConnection(option.main:GetPropertyChangedSignal("AbsoluteSize"), function()
+			task.defer(reflow)
+		end)
 		option.Text = option.text
+		task.defer(reflow)
 	end
 
 	library.createDivider = function(option, parent)
@@ -2638,6 +2657,7 @@
 					library:AddConnection(layout:GetPropertyChangedSignal("AbsoluteContentSize"), function()
 						if self.main then
 							self.main.Size = UDim2.new(1, 0, 0, layout.AbsoluteContentSize.Y + 16)
+							library:RequestLayout(column.tab)
 						end
 					end)
 
@@ -2664,12 +2684,12 @@
 
 				self.main = library:Create("ScrollingFrame", {
 					ZIndex = 2,
-					Position = UDim2.new(0, 6 + (self.position * 239), 0, 2),
+					Position = UDim2.new(0, 0, 0, 2),
 					Size = UDim2.new(0, 233, 1, -4),
 					BackgroundTransparency = 1,
 					BorderSizePixel = 0,
-					ScrollBarImageColor3 = Color3.new(),
-					ScrollBarThickness = 4,	
+					ScrollBarImageColor3 = Color3.fromRGB(44, 50, 65),
+					ScrollBarThickness = 4,
 					VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
 					ScrollingDirection = Enum.ScrollingDirection.Y,
 					Visible = false,
@@ -2679,9 +2699,10 @@
 				local layout = library:Create("UIListLayout", {
 					HorizontalAlignment = Enum.HorizontalAlignment.Center,
 					SortOrder = Enum.SortOrder.LayoutOrder,
-					Padding = UDim.new(0, 12),
+					Padding = UDim.new(0, 10),
 					Parent = self.main
 				})
+				self.layout = layout
 
 				library:Create("UIPadding", {
 					PaddingTop = UDim.new(0, 8),
@@ -2690,11 +2711,16 @@
 					Parent = self.main
 				})
 
-				library:AddConnection(layout:GetPropertyChangedSignal("AbsoluteContentSize"), function()
-					if self.main then
-						self.main.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 14)
+				local function updateMetrics()
+					if not self.main or not layout then return end
+					self.contentHeight = math.max(0, layout.AbsoluteContentSize.Y + 14)
+					self.main.CanvasSize = UDim2.new(0, 0, 0, self.contentHeight)
+					if library.currentTab == self.tab then
+						library:RequestLayout(self.tab)
 					end
-				end)
+				end
+
+				library:AddConnection(layout:GetPropertyChangedSignal("AbsoluteContentSize"), updateMetrics)
 
 				for _, section in next, self.sections do
 					if section.canInit and #section.options > 0 then
@@ -2704,6 +2730,8 @@
 						end
 					end
 				end
+
+				task.defer(updateMetrics)
 			end
 
 			if library.hasInit and self.hasInit then
@@ -3016,11 +3044,46 @@
 		return Vector2.new(1920, 1080)
 	end
 
+	function library:GetTabContentHeight(tab)
+		local tallest = 0
+		if tab then
+			for _, column in ipairs(tab.columns or {}) do
+				local height = tonumber(column.contentHeight) or 0
+				if height <= 0 and column.layout then
+					height = column.layout.AbsoluteContentSize.Y + 14
+				end
+				tallest = math.max(tallest, height)
+			end
+		end
+		return tallest
+	end
+
 	function library:GetRequiredWindowSize(tab)
-		local columnCount = math.max(2, tab and #tab.columns or 2)
-		local contentWidth = 16 + (columnCount * 239)
+		local columnCount = math.max(1, tab and #tab.columns or 1)
+		local gap = tonumber(self.columnGap) or 8
+		local preferred = tonumber(self.preferredColumnWidth) or 285
+		local contentWidth = 12 + (columnCount * preferred) + (math.max(0, columnCount - 1) * gap)
 		local tabWidth = math.max(self.minimumWindowWidth or 494, (self.tabSize or 0) + 14)
-		return Vector2.new(math.max(contentWidth, tabWidth), self.windowHeight or 600)
+		local width = math.max(contentWidth, tabWidth)
+
+		local contentHeight = self:GetTabContentHeight(tab)
+		local minimumHeight = tonumber(self.minimumWindowHeight) or 250
+		local maximumHeight = tonumber(self.maximumWindowHeight) or tonumber(self.windowHeight) or 600
+		local desiredHeight = contentHeight > 0 and (contentHeight + 69) or minimumHeight
+		local height = math.clamp(desiredHeight, minimumHeight, maximumHeight)
+		return Vector2.new(math.floor(width + 0.5), math.floor(height + 0.5))
+	end
+
+	function library:RequestLayout(tab)
+		self.pendingLayoutTab = tab or self.currentTab
+		if self.layoutQueued then return end
+		self.layoutQueued = true
+		task.defer(function()
+			self.layoutQueued = false
+			if not self.unloaded and self.main then
+				self:UpdateWindowLayout(self.pendingLayoutTab or self.currentTab)
+			end
+		end)
 	end
 
 	function library:UpdateWindowLayout(tab)
@@ -3031,6 +3094,24 @@
 		tab = tab or self.currentTab
 		local required = self:GetRequiredWindowSize(tab)
 		self.main.Size = UDim2.fromOffset(required.X, required.Y)
+
+		local columns = tab and tab.columns or {}
+		local columnCount = math.max(1, #columns)
+		local gap = tonumber(self.columnGap) or 8
+		local holderWidth = math.max(1, required.X - 10)
+		local columnWidth = math.floor((holderWidth - (gap * (columnCount + 1))) / columnCount)
+		columnWidth = math.max(tonumber(self.minimumColumnWidth) or 220, columnWidth)
+
+		for index, column in ipairs(columns) do
+			if column.main then
+				local x = gap + ((index - 1) * (columnWidth + gap))
+				column.main.Position = UDim2.fromOffset(x, 2)
+				column.main.Size = UDim2.new(0, columnWidth, 1, -4)
+				local contentHeight = tonumber(column.contentHeight) or 0
+				column.main.CanvasSize = UDim2.new(0, 0, 0, contentHeight)
+				column.main.ScrollBarThickness = contentHeight > math.max(0, required.Y - 64) and 4 or 0
+			end
+		end
 
 		local viewport = self:GetViewportSize()
 		local margin = 28
@@ -3167,7 +3248,7 @@
 				AutoButtonColor = false,
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.new(0.5, 0, 0.5, 0),
-				Size = UDim2.new(0, 494, 0, 600),
+				Size = UDim2.new(0, 494, 0, 360),
 				BackgroundColor3 = self.palette.background,
 				BorderColor3 = self.palette.border,
 				ScaleType = Enum.ScaleType.Tile,
