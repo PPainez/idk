@@ -52,7 +52,7 @@
 	local library = {
 		__xanhub = true,
 		brand = "xanhub",
-		version = "3.0.0",
+		version = "3.1.0",
 		design = "xanhub",
 		tabs = {},
 		draggable = true,
@@ -73,6 +73,10 @@
 		fileext = ".xan",
 		defaultAccent = DEFAULT_ACCENT,
 		palette = PALETTE,
+		windowHeight = 600,
+		minimumWindowWidth = 494,
+		userScale = 1,
+		autoScale = 1,
 	}
 
 	-- Seed theme flags before any controls initialize. Older versions left the
@@ -444,6 +448,7 @@
 		self.warning = nil
 		self.base = nil
 		self.main = nil
+		self.uiScale = nil
 		self.top = nil
 		self.currentTab = nil
 		self.initialized = false
@@ -2998,6 +3003,60 @@
 		}
 	end
 
+	function library:GetViewportSize()
+		local camera = workspace.CurrentCamera
+		if camera then
+			local ok, viewport = pcall(function()
+				return camera.ViewportSize
+			end)
+			if ok and typeof(viewport) == "Vector2" and viewport.X > 0 and viewport.Y > 0 then
+				return viewport
+			end
+		end
+		return Vector2.new(1920, 1080)
+	end
+
+	function library:GetRequiredWindowSize(tab)
+		local columnCount = math.max(2, tab and #tab.columns or 2)
+		local contentWidth = 16 + (columnCount * 239)
+		local tabWidth = math.max(self.minimumWindowWidth or 494, (self.tabSize or 0) + 14)
+		return Vector2.new(math.max(contentWidth, tabWidth), self.windowHeight or 600)
+	end
+
+	function library:UpdateWindowLayout(tab)
+		if not self.main then
+			return false
+		end
+
+		tab = tab or self.currentTab
+		local required = self:GetRequiredWindowSize(tab)
+		self.main.Size = UDim2.fromOffset(required.X, required.Y)
+
+		local viewport = self:GetViewportSize()
+		local margin = 28
+		local availableX = math.max(1, viewport.X - margin * 2)
+		local availableY = math.max(1, viewport.Y - margin * 2)
+		local fitScale = math.min(availableX / required.X, availableY / required.Y)
+		local requestedScale = math.clamp(tonumber(self.userScale) or 1, 0.55, 1.25)
+		local finalScale = math.clamp(math.min(requestedScale, fitScale), 0.35, 1.25)
+
+		self.autoScale = finalScale
+		if self.uiScale then
+			self.uiScale.Scale = finalScale
+		end
+		return true
+	end
+
+	function library:SetMenuScale(scale)
+		self.userScale = math.clamp(tonumber(scale) or 1, 0.55, 1.25)
+		self:UpdateWindowLayout(self.currentTab)
+		return self.userScale
+	end
+
+	function library:GetMenuScale()
+		return self.userScale or 1
+	end
+
 	function library:Init()
 		if self.unloaded then
 			return nil, "xanhub has already been unloaded"
@@ -3117,6 +3176,11 @@
 				Parent = self.base,
 			})
 			assert(self.main, "failed to create main window")
+
+			self.uiScale = self:Create("UIScale", {
+				Scale = 1,
+				Parent = self.main,
+			})
 
 			self.top = self:Create("Frame", {
 				Size = UDim2.new(1, 0, 0, 50),
@@ -3255,8 +3319,8 @@
 						end
 					end
 				end
-				self.main.Size = UDim2.new(0, 16 + (math.max(2, #tab.columns) * 239), 0, 600)
 				self.currentTab = tab
+				self:UpdateWindowLayout(tab)
 				tab.button.TextColor3 = self.flags["Menu Accent Color"] or self.defaultAccent
 				local tabWidth = tab.button.AbsoluteSize.X
 				if tabWidth <= 0 then
@@ -3289,7 +3353,25 @@
 			end
 			if firstTab then
 				self:selectTab(firstTab)
+			else
+				self:UpdateWindowLayout(nil)
 			end
+
+			local function connectViewportWatcher()
+				local camera = workspace.CurrentCamera
+				if camera then
+					self:AddConnection(camera:GetPropertyChangedSignal("ViewportSize"), "ViewportScale", function()
+						self:UpdateWindowLayout(self.currentTab)
+					end)
+				end
+			end
+			connectViewportWatcher()
+			self:AddConnection(workspace:GetPropertyChangedSignal("CurrentCamera"), "CameraScaleWatcher", function()
+				task.defer(function()
+					connectViewportWatcher()
+					self:UpdateWindowLayout(self.currentTab)
+				end)
+			end)
 
 			self:AddConnection(inputService.InputEnded, function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 and self.slider then
@@ -3311,7 +3393,8 @@
 					end
 				end
 				if input == dragInput and dragging and self.draggable and dragObject then
-					local delta = input.Position - dragStart
+					local scale = (self.uiScale and self.uiScale.Scale) or 1
+					local delta = (input.Position - dragStart) / math.max(scale, 0.01)
 					local yPos = math.max(-36, startPos.Y.Offset + delta.Y)
 					self:SafeTween(dragObject, TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
 						Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, yPos),
@@ -3384,6 +3467,7 @@
 		self.initialized = true
 		self.ready = true
 		self:SetAccent(self.flags["Menu Accent Color"] or self.defaultAccent)
+		self:UpdateWindowLayout(self.currentTab)
 		print("[xanhub " .. tostring(self.version) .. "] UI initialized | parent: " .. (self.uiParent and self.uiParent:GetFullName() or "unknown"))
 		return self
 	end
@@ -3435,6 +3519,9 @@
 		library.main.ImageColor3 = Color
 	end, trans = 1, calltrans = function(Value)
 		library.main.ImageTransparency = 1 - Value
+	end})
+	library.SettingsMenu:AddSlider({text = "Menu Scale", flag = "Menu Scale", value = 100, min = 55, max = 125, suffix = "%", callback = function(Value)
+		library:SetMenuScale((tonumber(Value) or 100) / 100)
 	end})
 	library.SettingsMenu:AddSlider({text = "Tile Size", value = 90, min = 50, max = 500, callback = function(Value)
 		library.main.TileSize = UDim2.new(0, Value, 0, Value)
