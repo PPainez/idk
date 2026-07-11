@@ -52,7 +52,7 @@
 	local library = {
 		__xanhub = true,
 		brand = "xanhub",
-		version = "3.2.0",
+		version = "3.2.1",
 		design = "xanhub",
 		tabs = {},
 		draggable = true,
@@ -74,8 +74,6 @@
 		defaultAccent = DEFAULT_ACCENT,
 		palette = PALETTE,
 		windowHeight = 600,
-		minimumWindowHeight = 250,
-		maximumWindowHeight = 600,
 		minimumWindowWidth = 494,
 		minimumColumnWidth = 220,
 		preferredColumnWidth = 285,
@@ -3059,18 +3057,21 @@
 	end
 
 	function library:GetRequiredWindowSize(tab)
+		-- Width is responsive, but height intentionally stays at the original
+		-- full 600px so tabs never squash the menu vertically.
 		local columnCount = math.max(1, tab and #tab.columns or 1)
 		local gap = tonumber(self.columnGap) or 8
 		local preferred = tonumber(self.preferredColumnWidth) or 285
 		local contentWidth = 12 + (columnCount * preferred) + (math.max(0, columnCount - 1) * gap)
 		local tabWidth = math.max(self.minimumWindowWidth or 494, (self.tabSize or 0) + 14)
-		local width = math.max(contentWidth, tabWidth)
+		local desiredWidth = math.max(contentWidth, tabWidth)
 
-		local contentHeight = self:GetTabContentHeight(tab)
-		local minimumHeight = tonumber(self.minimumWindowHeight) or 250
-		local maximumHeight = tonumber(self.maximumWindowHeight) or tonumber(self.windowHeight) or 600
-		local desiredHeight = contentHeight > 0 and (contentHeight + 69) or minimumHeight
-		local height = math.clamp(desiredHeight, minimumHeight, maximumHeight)
+		local viewport = self:GetViewportSize()
+		local horizontalMargin = 28
+		local maximumWidth = math.max(320, viewport.X - (horizontalMargin * 2))
+		local width = math.min(desiredWidth, maximumWidth)
+		local height = tonumber(self.windowHeight) or 600
+
 		return Vector2.new(math.floor(width + 0.5), math.floor(height + 0.5))
 	end
 
@@ -3113,29 +3114,30 @@
 			end
 		end
 
-		local viewport = self:GetViewportSize()
-		local margin = 28
-		local availableX = math.max(1, viewport.X - margin * 2)
-		local availableY = math.max(1, viewport.Y - margin * 2)
-		local fitScale = math.min(availableX / required.X, availableY / required.Y)
-		local requestedScale = math.clamp(tonumber(self.userScale) or 1, 0.55, 1.25)
-		local finalScale = math.clamp(math.min(requestedScale, fitScale), 0.35, 1.25)
-
-		self.autoScale = finalScale
+		-- Never uniformly scale the window. Uniform UIScale changes both width and
+		-- height, which makes the full-length menu look vertically sandwiched.
+		self.userScale = 1
+		self.autoScale = 1
 		if self.uiScale then
-			self.uiScale.Scale = finalScale
+			self.uiScale.Scale = 1
 		end
 		return true
 	end
 
-	function library:SetMenuScale(scale)
-		self.userScale = math.clamp(tonumber(scale) or 1, 0.55, 1.25)
+	-- Kept as compatibility methods for older scripts/configs. The menu now uses
+	-- horizontal layout resizing only, so these always remain at 1.
+	function library:SetMenuScale(_)
+		self.userScale = 1
+		self.autoScale = 1
+		if self.uiScale then
+			self.uiScale.Scale = 1
+		end
 		self:UpdateWindowLayout(self.currentTab)
-		return self.userScale
+		return 1
 	end
 
 	function library:GetMenuScale()
-		return self.userScale or 1
+		return 1
 	end
 
 	function library:Init()
@@ -3248,7 +3250,7 @@
 				AutoButtonColor = false,
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.new(0.5, 0, 0.5, 0),
-				Size = UDim2.new(0, 494, 0, 360),
+				Size = UDim2.new(0, 494, 0, 600),
 				BackgroundColor3 = self.palette.background,
 				BorderColor3 = self.palette.border,
 				ScaleType = Enum.ScaleType.Tile,
@@ -3600,9 +3602,6 @@
 		library.main.ImageColor3 = Color
 	end, trans = 1, calltrans = function(Value)
 		library.main.ImageTransparency = 1 - Value
-	end})
-	library.SettingsMenu:AddSlider({text = "Menu Scale", flag = "Menu Scale", value = 100, min = 55, max = 125, suffix = "%", callback = function(Value)
-		library:SetMenuScale((tonumber(Value) or 100) / 100)
 	end})
 	library.SettingsMenu:AddSlider({text = "Tile Size", value = 90, min = 50, max = 500, callback = function(Value)
 		library.main.TileSize = UDim2.new(0, Value, 0, Value)
