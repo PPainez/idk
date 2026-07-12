@@ -31,11 +31,15 @@ return function(ctx)
 
 	local intro = columns.homeLeft:AddSection("xanhub Gakuran")
 	intro:AddLabel("Game: (学乱) Gakuran")
-	intro:AddLabel("Edition: Gakuran · menu outline")
+	intro:AddLabel("Edition: Featured · live systems")
 	intro:AddLabel("Place ID: " .. tostring(game.PlaceId))
 	intro:AddLabel("Expected: " .. tostring(ctx.gakuran.placeId))
-	intro:AddLabel("Combat · ESP · Rhythm · Basketball · Parry Builder")
-	intro:AddLabel("Feature logic coming soon — UI scaffold only")
+	intro:AddDivider("Modules")
+	intro:AddLabel("Combat — auto parry · rear dodge · attack DB")
+	intro:AddLabel("Visuals — name/style/grade/stamina ESP")
+	intro:AddLabel("Rhythm — humanized auto-play (all instruments)")
+	intro:AddLabel("Basketball — green release · rim/ball ESP")
+	intro:AddLabel("Parry Builder — animation profiles for AP")
 
 	local quick = columns.homeRight:AddSection("Quick Actions")
 	quick:AddButton({
@@ -67,17 +71,29 @@ return function(ctx)
 
 	local runtimeSection = columns.homeRight:AddSection("Runtime")
 	ctx.refs.runtimeStatus = runtimeSection:AddLabel("Status: initializing")
+	ctx.refs.featureStatus = runtimeSection:AddLabel("Loaded: —")
 	runtimeSection:AddButton({
 		text = "Print Active Flags",
 		callback = function()
+			local count = 0
 			for flag, value in pairs(library.flags) do
 				if type(flag) == "string" and string.sub(flag, 1, 8) == "Gakuran " and value == true then
 					print("[xanhub gakuran active]", flag)
+					count = count + 1
 				end
+			end
+			ctx.notify(count .. " active Gakuran flags (console)", 2)
+		end,
+	})
+	runtimeSection:AddButton({
+		text = "Unload xanhub",
+		callback = function()
+			if library.Unload then
+				library:Unload()
 			end
 		end,
 	})
-	runtimeSection:AddLabel("Enable Dev Tools in Settings for animation tools")
+	runtimeSection:AddLabel("Dev Tools: Settings tab · animation logger/viewer")
 
 	return {
 		tabs = {

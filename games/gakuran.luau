@@ -1,8 +1,8 @@
 --[[
     xanhub | Gakuran
 
-    Game-specific edition for (学乱) Gakuran.
-    Menu outline only — feature logic wired later.
+    Featured edition for (学乱) Gakuran.
+    Combat · Visuals ESP · Rhythm · Basketball · Parry Builder · DevTools
 ]]
 
 local GAKURAN_PLACE_ID = 128736949265057
@@ -117,6 +117,7 @@ local state = {
 	},
 	rhythm = {},
 	basketball = {},
+	combat = {},
 }
 
 local connections = Connection.new(library, state.connections)
@@ -143,25 +144,47 @@ ctx.gakuran = {
 	name = "Gakuran",
 }
 
-local uiResult = moduleLoader.load("games/gakuran/modules/ui.luau")(ctx)
+local function safeLoadFeature(path)
+	local ok, result = pcall(function()
+		return moduleLoader.load(path)(ctx)
+	end)
+	if not ok then
+		warn("[xanhub gakuran] failed to load " .. path .. ": " .. tostring(result))
+		return nil
+	end
+	return result
+end
+
+local function safeSetup(name, controller)
+	if not controller or type(controller.setup) ~= "function" then
+		return
+	end
+	local ok, err = pcall(controller.setup)
+	if not ok then
+		warn("[xanhub gakuran] " .. tostring(name) .. " setup failed: " .. tostring(err))
+	end
+end
+
+local uiResult = safeLoadFeature("games/gakuran/modules/ui.luau")
+assert(uiResult, "[xanhub gakuran] UI module failed")
 ctx.columns = uiResult.columns
 ctx.tabs = uiResult.tabs
 
-local devtoolsController = moduleLoader.load("universal/modules/devtools.luau")(ctx)
-local parryBuilder = moduleLoader.load("games/gakuran/modules/parry_builder.luau")(ctx)
+local devtoolsController = safeLoadFeature("universal/modules/devtools.luau")
+local parryBuilder = safeLoadFeature("games/gakuran/modules/parry_builder.luau")
 
-local menuModules = {
+local featureSetups = {}
+local featureNames = {}
+for _, modulePath in ipairs({
 	"games/gakuran/modules/combat.luau",
 	"games/gakuran/modules/visuals.luau",
 	"games/gakuran/modules/rhythm.luau",
 	"games/gakuran/modules/basketball.luau",
-}
-
-local featureSetups = {}
-for _, modulePath in ipairs(menuModules) do
-	local feature = moduleLoader.load(modulePath)(ctx)
+}) do
+	local feature = safeLoadFeature(modulePath)
 	if feature and type(feature.setup) == "function" then
 		table.insert(featureSetups, feature.setup)
+		table.insert(featureNames, modulePath:match("([^/]+)%.luau$") or modulePath)
 	end
 end
 
@@ -169,15 +192,16 @@ local initialized, initError = library:Init()
 assert(initialized, "[xanhub gakuran] initialization failed: " .. tostring(initError))
 
 ctx.createOverlayRoot()
-for _, setup in ipairs(featureSetups) do
-	setup()
+
+for index, setup in ipairs(featureSetups) do
+	local ok, err = pcall(setup)
+	if not ok then
+		warn("[xanhub gakuran] feature setup failed (" .. tostring(featureNames[index]) .. "): " .. tostring(err))
+	end
 end
-if devtoolsController and type(devtoolsController.setup) == "function" then
-	devtoolsController.setup()
-end
-if parryBuilder and type(parryBuilder.setup) == "function" then
-	parryBuilder.setup()
-end
+
+safeSetup("devtools", devtoolsController)
+safeSetup("parry_builder", parryBuilder)
 
 library:AddCleanup(function()
 	state.unloading = true
@@ -210,12 +234,15 @@ library:selectTab(ctx.tabs.home)
 local detected = game.PlaceId == GAKURAN_PLACE_ID
 if ctx.refs.runtimeStatus then
 	ctx.refs.runtimeStatus.Text = detected
-		and "Status: Gakuran edition · menu outline ready"
-		or "Status: wrong place — Gakuran features unavailable"
+		and ("Status: ready · " .. #featureNames .. " features loaded")
+		or "Status: wrong place — some features may misbehave"
+end
+if ctx.refs.featureStatus then
+	ctx.refs.featureStatus.Text = "Loaded: " .. table.concat(featureNames, ", ")
 end
 
-ctx.notify("xanhub Gakuran edition loaded", 3)
-print("[xanhub] Gakuran loaded for place", game.PlaceId)
+ctx.notify(detected and "xanhub Gakuran ready" or "xanhub Gakuran loaded (place mismatch)", 3)
+print("[xanhub] Gakuran loaded for place", game.PlaceId, "features", table.concat(featureNames, ", "))
 
 return {
 	library = library,

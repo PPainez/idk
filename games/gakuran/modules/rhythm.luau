@@ -271,21 +271,27 @@ return function(ctx)
 		return nil
 	end
 
-	local function getService()
-		local service = st.service
-		if type(service) ~= "table" then
-			service = findLoaded("RhythmServiceClient")
-			st.service = service
+	local function getService(force)
+		if force or type(st.service) ~= "table" then
+			st.service = findLoaded("RhythmServiceClient")
 		end
-		return service
+		return st.service
 	end
 
 	local function getSession()
-		local service = getService()
+		local service = getService(false)
+		if type(service) ~= "table" then
+			service = getService(true)
+		end
 		if type(service) ~= "table" then
 			return nil
 		end
 		local session = service._session
+		if type(session) ~= "table" or session._destroyed == true or session._started ~= true then
+			-- Session may have been swapped after song end — refresh service once.
+			service = getService(true)
+			session = service and service._session
+		end
 		if type(session) ~= "table" then
 			return nil
 		end

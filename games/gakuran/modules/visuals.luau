@@ -376,6 +376,8 @@ return function(ctx)
 			nameLabel = nameLabel,
 			detailLabel = detailLabel,
 			highlight = highlight,
+			infoCache = nil,
+			infoCacheAt = 0,
 		}
 		espState.entries[player] = entry
 		return entry
@@ -499,7 +501,14 @@ return function(ctx)
 		local x = minX
 		local y = minY
 
-		local info = resolveInfo(player, character)
+		-- Cache PlayerData text ~6.5x/sec (attrs rarely change mid-frame).
+		local now = os.clock()
+		local info = entry.infoCache
+		if not info or (now - (entry.infoCacheAt or 0)) > 0.15 then
+			info = resolveInfo(player, character)
+			entry.infoCache = info
+			entry.infoCacheAt = now
+		end
 
 		-- Box
 		if flag("Gakuran ESP Boxes", true) then

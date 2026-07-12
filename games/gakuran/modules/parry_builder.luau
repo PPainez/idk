@@ -1,8 +1,8 @@
 --[[
     xanhub | gakuran | parry builder
 
-    Parry profile builder UI integrated with dev animation logger/viewer.
-    Profiles are stored in ctx.state.parry — logic wired later.
+    Animation profile builder for Auto Parry.
+    Profiles live in ctx.state.parry and override attack DB timing when enabled.
 ]]
 
 return function(ctx)
@@ -16,10 +16,6 @@ return function(ctx)
 	local function devShared()
 		local dev = ctx.devtools
 		return dev and dev.shared
-	end
-
-	local function notifySoon(feature)
-		ctx.notify(feature .. " — coming soon", 2)
 	end
 
 	local tools = columns.parryLeft:AddSection("Animation Tools")
@@ -155,13 +151,61 @@ return function(ctx)
 	profiles:AddButton({
 		text = "Export Profiles",
 		callback = function()
-			notifySoon("Export profiles")
+			local payload = {}
+			for name, profile in pairs(state.profiles) do
+				if type(profile) == "table" then
+					payload[name] = profile
+				end
+			end
+			local ok, encoded = pcall(function()
+				return game:GetService("HttpService"):JSONEncode(payload)
+			end)
+			if not ok or type(encoded) ~= "string" then
+				ctx.notify("Export failed", 3)
+				return
+			end
+			if ctx.safeClipboard(encoded) then
+				ctx.notify("Profiles copied to clipboard", 2)
+			end
 		end,
 	})
 	profiles:AddButton({
 		text = "Import Profiles",
 		callback = function()
-			notifySoon("Import profiles")
+			local getter = type(getclipboard) == "function" and getclipboard
+				or type(get_clipboard) == "function" and get_clipboard
+				or nil
+			if not getter then
+				ctx.notify("Clipboard read unavailable on this executor", 3)
+				return
+			end
+			local okClip, raw = pcall(getter)
+			if not okClip or type(raw) ~= "string" or raw == "" then
+				ctx.notify("Clipboard empty or unreadable", 3)
+				return
+			end
+			local okJson, decoded = pcall(function()
+				return game:GetService("HttpService"):JSONDecode(raw)
+			end)
+			if not okJson or type(decoded) ~= "table" then
+				ctx.notify("Clipboard is not valid profile JSON", 3)
+				return
+			end
+			local added = 0
+			for name, profile in pairs(decoded) do
+				if type(name) == "string" and type(profile) == "table" then
+					state.profiles[name] = profile
+					added = added + 1
+				end
+			end
+			local count = 0
+			for _ in pairs(state.profiles) do
+				count = count + 1
+			end
+			if ctx.refs.parryCountLabel then
+				ctx.refs.parryCountLabel.Text = "Saved profiles: " .. tostring(count)
+			end
+			ctx.notify("Imported " .. tostring(added) .. " profiles", 2)
 		end,
 	})
 	profiles:AddButton({
@@ -186,7 +230,7 @@ return function(ctx)
 	builder:AddLabel("3. Select an entry → Use Logger Selection")
 	builder:AddLabel("4. Tune window/range → Add Profile")
 	builder:AddLabel("5. Preview with Animation Viewer")
-	builder:AddLabel("Parry execution logic will hook profiles later")
+	builder:AddLabel("Profiles feed Auto Parry when Use Builder Profiles is on")
 
 	local function setup()
 		local count = 0

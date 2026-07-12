@@ -352,8 +352,12 @@ return function(ctx)
 
 	local function scheduleResponse(attacker, track, dbEntry)
 		local animId = dbEntry.id
-		local token = tostring(attacker.UserId) .. ":" .. tostring(animId) .. ":" .. string.format("%.3f", os.clock())
-		st.pending[token] = true
+		-- One pending response per attacker+anim (prevents double-fire spam).
+		local dedupe = tostring(attacker.UserId) .. ":" .. tostring(animId)
+		if st.pending[dedupe] then
+			return
+		end
+		st.pending[dedupe] = true
 
 		local hitDelay = tonumber(dbEntry.hitDelay) or 0.32
 		local window = tonumber(dbEntry.window) or 0.125
@@ -373,12 +377,20 @@ return function(ctx)
 			debugLog("profile override", profile.name or profile.animationName)
 		end
 
+		-- Prefer remaining time from the live track when available.
+		local elapsed = 0
+		if track then
+			pcall(function()
+				elapsed = tonumber(track.TimePosition) or 0
+			end)
+		end
 		local reaction = numFlag("Gakuran Reaction Offset", 40) / 1000
-		-- Block slightly before hitbox for perfect window
-		local waitTime = math.max(0, hitDelay - reaction - (window * 0.35))
+		-- Block slightly before predicted hitbox for the perfect window.
+		local target = hitDelay - reaction - (window * 0.35)
+		local waitTime = math.max(0, target - elapsed)
 
 		task.delay(waitTime, function()
-			st.pending[token] = nil
+			st.pending[dedupe] = nil
 			if ctx.state.unloading then
 				return
 			end
@@ -389,10 +401,18 @@ return function(ctx)
 				return
 			end
 
+			-- Soft global cooldown so we don't hammer Block/Evasive.
+			local now = os.clock()
+			if autoParry and (now - (st.lastParryAt or 0)) < 0.12 then
+				return
+			end
+			if autoDodge and (now - (st.lastDodgeAt or 0)) < 0.18 then
+				-- still allow parry path below
+			end
+
 			local myChar = LocalPlayer.Character
 			local myRoot = getRoot(myChar)
-			local theirChar = attacker.Character
-			local theirRoot = getRoot(theirChar)
+			local theirRoot = getRoot(attacker.Character)
 			if not myRoot or not theirRoot then
 				return
 			end
@@ -404,41 +424,28 @@ return function(ctx)
 				return
 			end
 
-			-- Track still playing?
-			if track then
-				local playing = false
-				pcall(function()
-					playing = track.IsPlaying
-				end)
-				if playing == false then
-					debugLog("anim ended early")
-					-- still allow if very close to hit time
-				end
-			end
-
 			local rearAngle = numFlag("Gakuran Dodge Rear Angle", 115)
 			local behind = isBehind(myRoot, theirRoot, rearAngle)
 			local dodgeRange = numFlag("Gakuran Dodge Range", 12)
 
 			if autoDodge and behind and dist <= dodgeRange then
-				doDodge(dbEntry.name or "rear")
+				if (now - (st.lastDodgeAt or 0)) >= 0.18 then
+					doDodge(dbEntry.name or "rear")
+				end
 				return
 			end
 
 			if autoParry and dist <= range then
-				-- front / side → parry
-				if not behind then
-					doParry(dbEntry)
-				elseif not autoDodge then
-					-- rear but dodge off → still try parry
+				if not behind or not autoDodge then
 					doParry(dbEntry)
 				end
 				return
 			end
 
 			if flag("Gakuran Dodge Fallback", false) and autoDodge then
-				local stunned = myChar and (myChar:GetAttribute("Stunned") == true or myChar:GetAttribute("CantAnything") == true)
-				if stunned then
+				local stunned = myChar
+					and (myChar:GetAttribute("Stunned") == true or myChar:GetAttribute("CantAnything") == true)
+				if stunned and (now - (st.lastDodgeAt or 0)) >= 0.18 then
 					doDodge("fallback")
 				end
 			end
@@ -606,14 +613,20 @@ return function(ctx)
 
 		ctx.addConnection(Players.PlayerRemoving, unhookPlayer)
 
-		-- Stay equipped / cooldown clear pulse
-		ctx.addConnection(RunService.Heartbeat, function()
+		-- Stay equipped / cooldown clear (throttled — avoid per-frame attribute spam)
+		local maintAccum = 0
+		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
 				return
 			end
 			if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
 				return
 			end
+			maintAccum = maintAccum + (tonumber(dt) or 0)
+			if maintAccum < 0.2 then
+				return
+			end
+			maintAccum = 0
 			local character = LocalPlayer.Character
 			if flag("Gakuran No Parry Cooldown", false) then
 				clearBlockCooldown(character)

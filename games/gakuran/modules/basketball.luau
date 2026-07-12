@@ -120,6 +120,7 @@ return function(ctx)
 
 	local function getClient()
 		local client = bb.client
+		-- Invalidate if the singleton was replaced after unequip/re-equip.
 		if type(client) == "table" and type(client._releaseShot) == "function" then
 			return client
 		end
