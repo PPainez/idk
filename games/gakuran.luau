@@ -2,7 +2,7 @@
     xanhub | Gakuran
 
     Featured edition for (学乱) Gakuran.
-    Combat · Visuals ESP · Rhythm · Basketball · Parry Builder · DevTools
+    Combat · Visuals ESP · Rhythm · Basketball · Skip Death · Parry Builder · DevTools
 ]]
 
 local GAKURAN_PLACE_ID = 128736949265057
@@ -180,6 +180,7 @@ for _, modulePath in ipairs({
 	"games/gakuran/modules/visuals.luau",
 	"games/gakuran/modules/rhythm.luau",
 	"games/gakuran/modules/basketball.luau",
+	"games/gakuran/modules/death_skip.luau",
 }) do
 	local feature = safeLoadFeature(modulePath)
 	if feature and type(feature.setup) == "function" then
