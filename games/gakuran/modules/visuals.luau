@@ -398,10 +398,18 @@ return function(ctx)
 		end
 	end
 
+	local function isR6(character)
+		return character
+			and character:FindFirstChild("Torso") ~= nil
+			and character:FindFirstChild("UpperTorso") == nil
+	end
+
 	local function getCharacterBounds(camera, character, rootPart)
-		local width = 3.1
-		local height = 5.6
-		local offsetY = 0.35
+		-- R6 boxes are narrower/shorter than R15.
+		local r6 = isR6(character)
+		local width = r6 and 2.2 or 3.1
+		local height = r6 and 5.0 or 5.6
+		local offsetY = r6 and 0.15 or 0.35
 		local center = rootPart.Position + Vector3.new(0, offsetY, 0)
 		local worldUp = Vector3.new(0, height * 0.5, 0)
 		local cameraRight = camera.CFrame.RightVector * (width * 0.5)
@@ -455,7 +463,10 @@ return function(ctx)
 		local character = player.Character
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		local rootPart = character and (
-			character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+			character:FindFirstChild("HumanoidRootPart")
+			or character:FindFirstChild("Torso")
+			or character:FindFirstChild("UpperTorso")
+			or character.PrimaryPart
 		)
 
 		if not character or not humanoid or not rootPart or humanoid.Health <= 0 then
@@ -664,7 +675,10 @@ return function(ctx)
 
 			local localChar = LocalPlayer.Character
 			local localRoot = localChar and (
-				localChar:FindFirstChild("HumanoidRootPart") or localChar.PrimaryPart
+				localChar:FindFirstChild("HumanoidRootPart")
+				or localChar:FindFirstChild("Torso")
+				or localChar:FindFirstChild("UpperTorso")
+				or localChar.PrimaryPart
 			)
 
 			local drawn = 0

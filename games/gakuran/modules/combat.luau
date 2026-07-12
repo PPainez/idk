@@ -334,7 +334,11 @@ return function(ctx)
 		if not character then
 			return nil
 		end
-		return character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+		-- R6: Torso is the reliable root. Some rigs also have HumanoidRootPart.
+		return character:FindFirstChild("HumanoidRootPart")
+			or character:FindFirstChild("Torso")
+			or character:FindFirstChild("UpperTorso")
+			or character.PrimaryPart
 	end
 
 	local function getLocalRoot()
@@ -350,12 +354,18 @@ return function(ctx)
 		if flat.Magnitude < 0.05 then
 			return false
 		end
+		-- Prefer humanoid move direction when available (more reliable on R6).
 		local look = Vector3.new(localRoot.CFrame.LookVector.X, 0, localRoot.CFrame.LookVector.Z)
+		local character = localRoot.Parent
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.MoveDirection.Magnitude > 0.05 then
+			look = Vector3.new(humanoid.MoveDirection.X, 0, humanoid.MoveDirection.Z)
+		end
 		if look.Magnitude < 0.05 then
 			return false
 		end
 		local dot = look.Unit:Dot(flat.Unit)
-		-- rearAngle 115° → cos(115°) ≈ -0.42; behind if angle from look > rearAngle
+		-- rearAngle 115° → behind if angle from look > rearAngle
 		local threshold = math.cos(math.rad(rearAngleDeg))
 		return dot <= threshold
 	end
@@ -673,28 +683,45 @@ return function(ctx)
 
 	local function collectPlayingTracks(character)
 		local tracks = {}
+		local seen = {}
 		if not character then
 			return tracks
 		end
+
+		local function push(list)
+			if type(list) ~= "table" then
+				return
+			end
+			for _, track in ipairs(list) do
+				if track and not seen[track] then
+					seen[track] = true
+					table.insert(tracks, track)
+				end
+			end
+		end
+
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		-- R6 combat often only shows up on Humanoid:GetPlayingAnimationTracks.
 		if humanoid and type(humanoid.GetPlayingAnimationTracks) == "function" then
-			pcall(function()
-				for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do
-					table.insert(tracks, track)
-				end
+			local ok, list = pcall(function()
+				return humanoid:GetPlayingAnimationTracks()
 			end)
+			if ok then
+				push(list)
+			end
 		end
-		local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-		if not animator then
-			animator = character:FindFirstChildWhichIsA("Animator", true)
-		end
+
+		local animator = (humanoid and humanoid:FindFirstChildOfClass("Animator"))
+			or character:FindFirstChildWhichIsA("Animator", true)
 		if animator and type(animator.GetPlayingAnimationTracks) == "function" then
-			pcall(function()
-				for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-					table.insert(tracks, track)
-				end
+			local ok, list = pcall(function()
+				return animator:GetPlayingAnimationTracks()
 			end)
+			if ok then
+				push(list)
+			end
 		end
+
 		return tracks
 	end
 

@@ -119,6 +119,8 @@ local function createContext(deps)
 		character = character or ctx.getCharacter()
 		return character and (
 			character:FindFirstChild("HumanoidRootPart")
+			or character:FindFirstChild("Torso") -- R6
+			or character:FindFirstChild("UpperTorso") -- R15
 			or character.PrimaryPart
 		)
 	end
