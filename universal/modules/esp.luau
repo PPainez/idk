@@ -132,14 +132,14 @@ return function(ctx)
         value = "Signature",
     })
     espSection:AddToggle({text = "Box", flag = "Universal ESP Box", state = true})
-    espSection:AddToggle({text = "Box Fill", flag = "Universal ESP Box Fill", state = true})
-    espSection:AddToggle({text = "Animated Scanline", flag = "Universal ESP Scanline", state = true})
+    espSection:AddToggle({text = "Box Fill", flag = "Universal ESP Box Fill", state = false})
+    espSection:AddToggle({text = "Animated Scanline", flag = "Universal ESP Scanline", state = false})
     espSection:AddToggle({text = "Pulse Glow", flag = "Universal ESP Pulse", state = true})
     espSection:AddToggle({text = "Target Chevrons", flag = "Universal ESP Target Chevron", state = true})
     espSection:AddToggle({text = "Nametag", flag = "Universal ESP Nametag", state = true})
     espSection:AddToggle({text = "Show Username", flag = "Universal ESP Show Username", state = false})
     espSection:AddToggle({text = "Distance", flag = "Universal ESP Distance", state = true})
-    espSection:AddToggle({text = "Held Tool", flag = "Universal ESP Tool", state = true})
+    espSection:AddToggle({text = "Held Tool", flag = "Universal ESP Tool", state = false})
     espSection:AddToggle({text = "Health Bar", flag = "Universal ESP Health", state = true})
     espSection:AddToggle({text = "Health Number", flag = "Universal ESP Health Number", state = true})
     espSection:AddList({
@@ -174,6 +174,24 @@ return function(ctx)
         suffix = "%",
     })
     visibilitySection:AddToggle({text = "Use Team Colors", flag = "Universal ESP Use Team Color", state = false})
+    visibilitySection:AddToggle({text = "Clutter Control", flag = "Universal ESP Clutter Control", state = true})
+    visibilitySection:AddSlider({
+        text = "Compact After",
+        flag = "Universal ESP Compact Distance",
+        min = 75,
+        max = 1000,
+        value = 220,
+        float = 5,
+        suffix = " studs",
+    })
+    visibilitySection:AddSlider({
+        text = "Maximum Nametags",
+        flag = "Universal ESP Max Nametags",
+        min = 4,
+        max = 30,
+        value = 12,
+        float = 1,
+    })
 
     local styleSection = ctx.columns.visualsRight:AddSection("Signature Styling")
     styleSection:AddLabel("UI-native neon brackets with smooth target emphasis")
@@ -356,6 +374,22 @@ return function(ctx)
             return label
         end
 
+        local function createLayer(name, zIndex)
+            local layer = newFrame(overlayRoot, name, zIndex)
+            layer.Size = UDim2.fromScale(1, 1)
+            layer.Position = UDim2.fromScale(0, 0)
+            layer.BackgroundTransparency = 1
+            layer.Visible = true
+            layer.Active = false
+            layer.ClipsDescendants = false
+            return layer
+        end
+
+        -- Separate sibling layers prevent distant boxes from drawing over labels.
+        local geometryLayer = createLayer("ESP_Geometry", 520)
+        local labelLayer = createLayer("ESP_Labels", 700)
+        local offscreenLayer = createLayer("ESP_Offscreen", 820)
+
         local function createCornerLine(parent, index)
             local line = newFrame(parent, "Corner" .. index, 528)
             line.BackgroundColor3 = DEFAULT_ACCENT
@@ -381,6 +415,15 @@ return function(ctx)
             if entry.root then
                 entry.root.Visible = false
             end
+            if entry.namePill then
+                entry.namePill.Visible = false
+            end
+            if entry.healthBackground then
+                entry.healthBackground.Visible = false
+            end
+            if entry.healthText then
+                entry.healthText.Visible = false
+            end
             if entry.offscreen then
                 entry.offscreen.Visible = false
             end
@@ -397,6 +440,9 @@ return function(ctx)
 
             safeDestroy(entry.highlight)
             safeDestroy(entry.root)
+            safeDestroy(entry.namePill)
+            safeDestroy(entry.healthBackground)
+            safeDestroy(entry.healthText)
             safeDestroy(entry.offscreen)
             ctx.state.esp[player] = nil
         end
@@ -409,7 +455,7 @@ return function(ctx)
                 return nil
             end
 
-            local root = newFrame(overlayRoot, "ESP_" .. player.Name, 520)
+            local root = newFrame(geometryLayer, "ESP_" .. player.Name, 520)
             root.Size = UDim2.fromScale(1, 1)
             root.Position = UDim2.fromScale(0, 0)
             root.BackgroundTransparency = 1
@@ -460,7 +506,7 @@ return function(ctx)
             chevronRight.TextYAlignment = Enum.TextYAlignment.Center
             chevronRight.TextSize = 26
 
-            local namePill = newFrame(root, "NamePill", 529)
+            local namePill = newFrame(labelLayer, "NamePill_" .. player.Name, 729)
             namePill.BackgroundColor3 = DARK
             namePill.BackgroundTransparency = 0.12
             local nameStroke = addStroke(namePill, DEFAULT_ACCENT, 1, 0.28)
@@ -478,6 +524,7 @@ return function(ctx)
             nameLabel.TextXAlignment = Enum.TextXAlignment.Left
             nameLabel.TextYAlignment = Enum.TextYAlignment.Center
             nameLabel.TextStrokeTransparency = 1
+            nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
             nameLabel.Visible = true
 
             local detailLabel = newText(namePill, "Details", 531)
@@ -494,7 +541,7 @@ return function(ctx)
             targetBadge.TextXAlignment = Enum.TextXAlignment.Right
             targetBadge.TextStrokeTransparency = 1
 
-            local healthBackground = newFrame(root, "HealthBackground", 529)
+            local healthBackground = newFrame(labelLayer, "HealthBackground_" .. player.Name, 724)
             healthBackground.BackgroundColor3 = Color3.fromRGB(20, 25, 34)
             healthBackground.BackgroundTransparency = 0.05
             addCorner(healthBackground, 3)
@@ -518,7 +565,7 @@ return function(ctx)
                 healthTicks[index] = tick
             end
 
-            local healthText = newText(root, "HealthText", 532)
+            local healthText = newText(labelLayer, "HealthText_" .. player.Name, 728)
             healthText.TextSize = 10
             healthText.TextXAlignment = Enum.TextXAlignment.Center
             healthText.TextYAlignment = Enum.TextYAlignment.Center
@@ -540,7 +587,7 @@ return function(ctx)
                 skeleton[index] = createSkeletonLine(root, index)
             end
 
-            local offscreen = newFrame(overlayRoot, "Offscreen_" .. player.Name, 535)
+            local offscreen = newFrame(offscreenLayer, "Offscreen_" .. player.Name, 835)
             offscreen.Size = UDim2.fromOffset(120, 42)
             offscreen.AnchorPoint = Vector2.new(0.5, 0.5)
             offscreen.BackgroundColor3 = DARK
@@ -826,6 +873,100 @@ return function(ctx)
             end
         end
 
+        local function setEntryDepth(entry, renderIndex, isTarget)
+            local priority = clamp(64 - (renderIndex or 1), 1, 64)
+            local geometryBase = isTarget and 640 or (540 + priority)
+            local labelBase = isTarget and 810 or (720 + priority)
+            local offscreenBase = isTarget and 900 or (840 + priority)
+
+            entry.root.ZIndex = geometryBase
+            entry.tracer.ZIndex = geometryBase
+            entry.glow.ZIndex = geometryBase + 1
+            entry.box.ZIndex = geometryBase + 3
+            entry.scanline.ZIndex = geometryBase + 5
+            entry.headDot.ZIndex = geometryBase + 6
+            entry.chevronLeft.ZIndex = geometryBase + 7
+            entry.chevronRight.ZIndex = geometryBase + 7
+            for _, corner in ipairs(entry.corners) do
+                corner.frame.ZIndex = geometryBase + 4
+            end
+            for _, bone in ipairs(entry.skeleton) do
+                bone.frame.ZIndex = geometryBase + 2
+            end
+
+            entry.namePill.ZIndex = labelBase
+            entry.statusDot.ZIndex = labelBase + 1
+            entry.nameLabel.ZIndex = labelBase + 2
+            entry.detailLabel.ZIndex = labelBase + 2
+            entry.targetBadge.ZIndex = labelBase + 3
+            entry.healthBackground.ZIndex = labelBase - 2
+            entry.healthFill.ZIndex = labelBase - 1
+            entry.healthText.ZIndex = labelBase + 1
+            for _, tick in ipairs(entry.healthTicks) do
+                tick.ZIndex = labelBase
+            end
+
+            entry.offscreen.ZIndex = offscreenBase
+            entry.arrow.ZIndex = offscreenBase + 2
+            entry.offscreenName.ZIndex = offscreenBase + 2
+            entry.offscreenDistance.ZIndex = offscreenBase + 2
+        end
+
+        local function rectanglesOverlap(a, b, padding)
+            padding = padding or 3
+            return not (
+                a.right + padding <= b.left
+                or a.left >= b.right + padding
+                or a.bottom + padding <= b.top
+                or a.top >= b.bottom + padding
+            )
+        end
+
+        local function claimNametag(layout, x, y, width, height, isTarget, compact)
+            if not layout or not layout.enabled then
+                return x, y, true
+            end
+
+            if layout.count >= layout.maximum and not isTarget then
+                layout.hidden += 1
+                return x, y, false
+            end
+
+            local attempts = isTarget and 6 or (compact and 2 or 4)
+            local step = height + 3
+            for attempt = 0, attempts do
+                local candidateY = math.max(4, y - attempt * step)
+                local rectangle = {
+                    left = x,
+                    top = candidateY,
+                    right = x + width,
+                    bottom = candidateY + height,
+                }
+                local blocked = false
+                for _, occupied in ipairs(layout.occupied) do
+                    if rectanglesOverlap(rectangle, occupied, 3) then
+                        blocked = true
+                        break
+                    end
+                end
+                if not blocked then
+                    table.insert(layout.occupied, rectangle)
+                    layout.count += 1
+                    return x, candidateY, true
+                end
+            end
+
+            if isTarget then
+                local rectangle = {left = x, top = y, right = x + width, bottom = y + height}
+                table.insert(layout.occupied, rectangle)
+                layout.count += 1
+                return x, y, true
+            end
+
+            layout.hidden += 1
+            return x, y, false
+        end
+
         local function updateOffscreen(entry, camera, displayColor, distance, isTarget, visible)
             local offscreen = entry.offscreen
             if not visible or not flag("Universal ESP Offscreen", true) then
@@ -864,7 +1005,7 @@ return function(ctx)
 
             offscreen.Visible = true
             offscreen.Position = UDim2.fromOffset(edge.X, edge.Y)
-            offscreen.Size = UDim2.fromOffset(isTarget and 132 or 112, isTarget and 44 or 40)
+            offscreen.Size = UDim2.fromOffset(isTarget and 112 or 92, isTarget and 36 or 30)
             offscreen.BackgroundTransparency = isTarget and 0.04 or 0.14
             entry.offscreenStroke.Color = displayColor
             entry.offscreenStroke.Thickness = isTarget and 2 or 1
@@ -872,10 +1013,10 @@ return function(ctx)
             entry.arrow.Rotation = angle
             entry.offscreenName.Text = getPlayerLabel(entry.player)
             entry.offscreenName.TextColor3 = isTarget and displayColor or WHITE
-            entry.offscreenDistance.Text = tostring(math.floor(distance + 0.5)) .. " studs"
+            entry.offscreenDistance.Text = tostring(math.floor(distance + 0.5)) .. "m"
         end
 
-        local function updateText(entry, distance, humanoid, isTarget, lineOfSight)
+        local function updateText(entry, distance, humanoid, isTarget, lineOfSight, compact)
             local now = os.clock()
             if now - entry.lastTextUpdate < 0.08 then
                 return
@@ -883,7 +1024,11 @@ return function(ctx)
             entry.lastTextUpdate = now
 
             local displayName = getPlayerLabel(entry.player)
-            entry.nameLabel.Text = displayName
+            if compact and flag("Universal ESP Distance", true) then
+                entry.nameLabel.Text = displayName .. "  •  " .. tostring(math.floor(distance + 0.5)) .. "m"
+            else
+                entry.nameLabel.Text = displayName
+            end
 
             local details = {}
             if flag("Universal ESP Show Username", false) and entry.player.Name ~= displayName then
@@ -898,14 +1043,16 @@ return function(ctx)
                     table.insert(details, toolName)
                 end
             end
-            entry.detailLabel.Text = #details > 0 and table.concat(details, "  •  ") or (lineOfSight and "visible" or "occluded")
+            entry.detailLabel.Text = compact
+                and ""
+                or (#details > 0 and table.concat(details, "  •  ") or (lineOfSight and "visible" or "occluded"))
 
             local health = math.max(0, math.floor(humanoid.Health + 0.5))
             entry.healthText.Text = tostring(health)
             entry.targetBadge.Visible = isTarget
         end
 
-        local function updateEntry(entry, candidate, camera, deltaTime, baseColor, friendlyColor, skeletonColor, maxDistance, fadeStart)
+        local function updateEntry(entry, candidate, camera, deltaTime, baseColor, friendlyColor, skeletonColor, maxDistance, fadeStart, labelLayout, renderIndex)
             local player = candidate.player
             local character = candidate.character
             local humanoid = candidate.humanoid
@@ -917,6 +1064,7 @@ return function(ctx)
             entry.character = character
             entry.rootPart = rootPart
             entry.highlight.Adornee = character
+            setEntryDepth(entry, renderIndex, isTarget)
 
             local bounds = getBounds(camera, character)
             local lineOfSight = checkLineOfSight(entry, camera, rootPart.Position)
@@ -956,6 +1104,10 @@ return function(ctx)
             end
             opacity = clamp(opacity, 0.08, 1)
 
+            local clutterControl = flag("Universal ESP Clutter Control", true)
+            local compactDistance = math.max(75, numberFlag("Universal ESP Compact Distance", 220))
+            local compact = clutterControl and not isTarget and distance >= compactDistance
+
             local displayColor = resolveColor(player, baseColor, friendlyColor, isTarget, targetColor, lineOfSight)
             local style = ctx.library.flags["Universal ESP Box Style"] or "Signature"
             if style ~= "Signature" and style ~= "Corners" and style ~= "Full" and style ~= "Double" and style ~= "Minimal" then
@@ -963,7 +1115,7 @@ return function(ctx)
             end
 
             local boxEnabled = flag("Universal ESP Box", true) and style ~= "Minimal"
-            local showFull = boxEnabled and (style == "Signature" or style == "Full" or style == "Double")
+            local showFull = boxEnabled and not compact and (style == "Signature" or style == "Full" or style == "Double")
             local showCorners = boxEnabled and (style == "Signature" or style == "Corners" or style == "Double")
             local boxThickness = clamp(numberFlag("Universal ESP Box Thickness", 2), 1, 4)
             local lineThickness = clamp(numberFlag("Universal ESP Line Thickness", 1.5), 1, 3)
@@ -974,7 +1126,7 @@ return function(ctx)
             local glowStrength = clamp(numberFlag("Universal ESP Glow Strength", 52) / 100, 0, 1)
             local fillOpacity = clamp(numberFlag("Universal ESP Fill Opacity", 12) / 100, 0, 0.55)
 
-            local showFill = boxEnabled and flag("Universal ESP Box Fill", true)
+            local showFill = boxEnabled and not compact and flag("Universal ESP Box Fill", false)
             entry.box.Visible = showFull or showFill
             entry.box.Position = UDim2.fromOffset(topLeft.X, topLeft.Y)
             entry.box.Size = UDim2.fromOffset(width, height)
@@ -986,7 +1138,7 @@ return function(ctx)
             entry.boxStroke.Thickness = isTarget and boxThickness + 0.75 or boxThickness
             entry.boxStroke.Transparency = showFull and clamp(1 - opacity * pulse, 0.02, 0.94) or 1
 
-            entry.glow.Visible = boxEnabled and glowStrength > 0 and style ~= "Minimal"
+            entry.glow.Visible = boxEnabled and not compact and glowStrength > 0 and style ~= "Minimal"
             entry.glow.Position = UDim2.fromOffset(topLeft.X - 2, topLeft.Y - 2)
             entry.glow.Size = UDim2.fromOffset(width + 4, height + 4)
             entry.glowStroke.Color = displayColor
@@ -1006,7 +1158,8 @@ return function(ctx)
 
             local scanlineVisible = boxEnabled
                 and style == "Signature"
-                and flag("Universal ESP Scanline", true)
+                and not compact
+                and flag("Universal ESP Scanline", false)
                 and width > 12
                 and height > 18
             entry.scanline.Visible = scanlineVisible
@@ -1033,32 +1186,59 @@ return function(ctx)
 
             local showName = flag("Universal ESP Nametag", true)
             local textSize = clamp(numberFlag("Universal ESP Nametag Size", 13), 10, 18)
-            local pillWidth = clamp(math.max(width + 22, isTarget and 168 or 136), 126, 270)
-            local detailsVisible = flag("Universal ESP Distance", true)
-                or flag("Universal ESP Tool", true)
+            local detailsRequested = flag("Universal ESP Distance", true)
+                or flag("Universal ESP Tool", false)
                 or flag("Universal ESP Show Username", false)
-            local pillHeight = detailsVisible and 36 or 24
-            entry.namePill.Visible = showName
-            entry.namePill.Position = UDim2.fromOffset(centerX - pillWidth * 0.5, topLeft.Y - pillHeight - 7)
+            local detailsVisible = detailsRequested and not compact
+            local pillHeight = detailsVisible and 30 or 20
+            local pillWidth
+            if compact then
+                pillWidth = clamp(math.max(width + 8, 92), 88, 152)
+            else
+                pillWidth = clamp(math.max(width + 14, isTarget and 148 or 112), 100, 214)
+            end
+
+            local pillX = centerX - pillWidth * 0.5
+            local pillY = topLeft.Y - pillHeight - (compact and 3 or 6)
+            local labelX, labelY, labelClaimed = pillX, pillY, false
+            if showName then
+                labelX, labelY, labelClaimed = claimNametag(
+                    labelLayout,
+                    pillX,
+                    pillY,
+                    pillWidth,
+                    pillHeight,
+                    isTarget,
+                    compact
+                )
+            end
+            local nameVisible = showName and labelClaimed
+            entry.namePill.Visible = nameVisible
+            entry.namePill.Position = UDim2.fromOffset(labelX, labelY)
             entry.namePill.Size = UDim2.fromOffset(pillWidth, pillHeight)
-            entry.namePill.BackgroundTransparency = clamp(0.1 + fade * 0.62 + (lineOfSight and 0 or 0.08), 0.08, 0.9)
+            entry.namePill.BackgroundTransparency = compact
+                and clamp(0.34 + fade * 0.48, 0.3, 0.92)
+                or clamp(0.14 + fade * 0.58 + (lineOfSight and 0 or 0.08), 0.12, 0.9)
             entry.nameStroke.Color = displayColor
             entry.nameStroke.Thickness = isTarget and 1.5 or 1
-            entry.nameStroke.Transparency = clamp(0.18 + fade * 0.58, 0.12, 0.88)
-            entry.statusDot.Position = UDim2.fromOffset(12, detailsVisible and 12 or pillHeight * 0.5)
+            entry.nameStroke.Transparency = compact
+                and clamp(0.45 + fade * 0.42, 0.42, 0.94)
+                or clamp(0.22 + fade * 0.54, 0.16, 0.88)
+            entry.statusDot.Visible = nameVisible and not compact
+            entry.statusDot.Position = UDim2.fromOffset(10, detailsVisible and 10 or pillHeight * 0.5)
             entry.statusDot.BackgroundColor3 = lineOfSight and Color3.fromRGB(90, 235, 155) or Color3.fromRGB(255, 177, 72)
-            entry.nameLabel.Position = UDim2.fromOffset(22, 2)
-            entry.nameLabel.Size = UDim2.new(1, isTarget and -72 or -30, 0, detailsVisible and 18 or pillHeight - 4)
-            entry.nameLabel.TextSize = textSize
+            entry.nameLabel.Position = UDim2.fromOffset(compact and 7 or 19, 1)
+            entry.nameLabel.Size = UDim2.new(1, isTarget and -66 or (compact and -12 or -24), 0, detailsVisible and 16 or pillHeight - 2)
+            entry.nameLabel.TextSize = compact and math.max(10, textSize - 2) or textSize
             entry.nameLabel.TextColor3 = isTarget and displayColor or WHITE
             entry.nameLabel.TextTransparency = 1 - opacity
-            entry.detailLabel.Visible = detailsVisible
-            entry.detailLabel.Position = UDim2.fromOffset(22, 18)
-            entry.detailLabel.Size = UDim2.new(1, -28, 0, 15)
-            entry.detailLabel.TextSize = math.max(9, textSize - 3)
-            entry.detailLabel.TextTransparency = clamp(1 - opacity + 0.08, 0, 1)
-            entry.targetBadge.Position = UDim2.new(1, -8, 0, detailsVisible and 12 or pillHeight * 0.5)
-            entry.targetBadge.Size = UDim2.fromOffset(44, 16)
+            entry.detailLabel.Visible = nameVisible and detailsVisible
+            entry.detailLabel.Position = UDim2.fromOffset(19, 15)
+            entry.detailLabel.Size = UDim2.new(1, -24, 0, 13)
+            entry.detailLabel.TextSize = math.max(9, textSize - 4)
+            entry.detailLabel.TextTransparency = clamp(1 - opacity + 0.12, 0, 1)
+            entry.targetBadge.Position = UDim2.new(1, -7, 0, detailsVisible and 10 or pillHeight * 0.5)
+            entry.targetBadge.Size = UDim2.fromOffset(40, 14)
             entry.targetBadge.TextColor3 = displayColor
             entry.targetBadge.TextTransparency = 1 - opacity
 
@@ -1066,25 +1246,31 @@ return function(ctx)
             local healthRatio = clamp(humanoid.Health / maximumHealth, 0, 1)
             entry.displayedHealth = damp(entry.displayedHealth, healthRatio, 13, deltaTime)
             local showHealth = flag("Universal ESP Health", true)
-            local healthHeight = clamp(height * 0.84, 22, 320)
+            local healthHeight = clamp(height * (compact and 0.72 or 0.84), 18, 320)
             local healthSide = ctx.library.flags["Universal ESP Health Side"] == "Right" and "Right" or "Left"
-            local barX = healthSide == "Right" and bottomRight.X + 7 or topLeft.X - 11
+            local barX = healthSide == "Right" and bottomRight.X + 6 or topLeft.X - 9
             local barY = centerY - healthHeight * 0.5
-            entry.healthBackground.Visible = showHealth
+            local meaningfulHealth = healthRatio <= 0.58
+            local healthVisible = showHealth and (not compact or isTarget or meaningfulHealth)
+            entry.healthBackground.Visible = healthVisible
             entry.healthBackground.Position = UDim2.fromOffset(barX, barY)
-            entry.healthBackground.Size = UDim2.fromOffset(4, healthHeight)
+            entry.healthBackground.Size = UDim2.fromOffset(compact and 2 or 3, healthHeight)
             entry.healthBackground.BackgroundTransparency = clamp(0.04 + fade * 0.68, 0.04, 0.92)
             entry.healthStroke.Transparency = clamp(0.15 + fade * 0.58, 0.15, 0.9)
             entry.healthFill.Size = UDim2.new(1, 0, entry.displayedHealth, 0)
             entry.healthFill.BackgroundColor3 = Color3.fromHSV(clamp(entry.displayedHealth, 0, 1) * 0.34, 0.78, 1)
             entry.healthFill.BackgroundTransparency = 1 - opacity
             for index, tick in ipairs(entry.healthTicks) do
+                tick.Visible = healthVisible and not compact and healthHeight >= 64
                 tick.Position = UDim2.new(0, 0, index / 4, 0)
                 tick.Size = UDim2.new(1, 0, 0, 1)
                 tick.BackgroundTransparency = clamp(0.22 + fade * 0.6, 0.22, 0.9)
             end
 
-            local showHealthNumber = showHealth and flag("Universal ESP Health Number", true) and height >= 42
+            local showHealthNumber = healthVisible
+                and flag("Universal ESP Health Number", true)
+                and (not compact or isTarget)
+                and height >= 42
             entry.healthText.Visible = showHealthNumber
             entry.healthText.TextColor3 = entry.healthFill.BackgroundColor3
             entry.healthText.TextTransparency = 1 - opacity
@@ -1143,7 +1329,7 @@ return function(ctx)
             entry.highlight.FillTransparency = clamp(0.92 + fade * 0.06, 0.9, 0.99)
             entry.highlight.OutlineTransparency = clamp(0.18 + fade * 0.68 + (lineOfSight and 0 or 0.08), 0.12, 0.96)
 
-            updateText(entry, distance, humanoid, isTarget, lineOfSight)
+            updateText(entry, distance, humanoid, isTarget, lineOfSight, compact)
         end
 
         local function buildCandidateList(camera)
@@ -1229,6 +1415,13 @@ return function(ctx)
             local friendlyColor = colorFlag("Universal ESP Friendly Color", DEFAULT_FRIENDLY)
             local skeletonColor = colorFlag("Universal ESP Skeleton Color", Color3.fromRGB(0, 210, 255))
             local maximumPlayers = clamp(math.floor(numberFlag("Universal ESP Max Players", 24)), 4, 50)
+            local labelLayout = {
+                enabled = flag("Universal ESP Clutter Control", true),
+                occupied = {},
+                count = 0,
+                hidden = 0,
+                maximum = clamp(math.floor(numberFlag("Universal ESP Max Nametags", 12)), 4, 30),
+            }
 
             for index = 1, math.min(visibleCount, maximumPlayers) do
                 local candidate = candidates[index]
@@ -1242,7 +1435,9 @@ return function(ctx)
                         friendlyColor,
                         skeletonColor,
                         maxDistance,
-                        fadeStart
+                        fadeStart,
+                        labelLayout,
+                        index
                     )
                 end)
                 if not ok then
@@ -1254,9 +1449,10 @@ return function(ctx)
             if statusAccumulator >= 0.35 then
                 statusAccumulator = 0
                 rendererStatus.Text = string.format(
-                    "Renderer: UI-native | %d visible | %d tracked",
+                    "Renderer: layered | %d visible | %d labels%s",
                     visibleCount,
-                    math.min(#candidates, maximumPlayers)
+                    labelLayout.count,
+                    labelLayout.hidden > 0 and (" | " .. tostring(labelLayout.hidden) .. " decluttered") or ""
                 )
             end
         end
@@ -1505,6 +1701,10 @@ return function(ctx)
             for _, player in ipairs(players) do
                 destroyEntry(player)
             end
+
+            safeDestroy(geometryLayer)
+            safeDestroy(labelLayer)
+            safeDestroy(offscreenLayer)
         end)
     end
 
