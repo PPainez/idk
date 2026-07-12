@@ -9,6 +9,19 @@ local UNIVERSAL_MARKERS = {
 	"local runtime = ...",
 }
 
+local UPDATE_MANIFEST = {
+	"universal.luau",
+	"universal/lib/context.luau",
+	"universal/modules/ui.luau",
+	"universal/modules/updates.luau",
+	"universal/modules/movement.luau",
+	"universal/modules/esp.luau",
+	"universal/modules/overlay.luau",
+	"universal/modules/world.luau",
+	"universal/modules/utility.luau",
+	"universal/modules/keybinds.luau",
+}
+
 return function(ctx)
 	local library = ctx.library
 	local runtime = ctx.runtime
@@ -17,9 +30,8 @@ return function(ctx)
 	local Http = ctx.shared.Http
 	local Constants = ctx.shared.Constants
 
-	local UPDATE_URLS = Constants.repositoryUrls("universal.luau")
 	local UPDATE_FOLDER = "xanhub_updates"
-	local UPDATE_REVISION_FILE = UPDATE_FOLDER .. "/universal_revision.txt"
+	local UPDATE_REVISION_FILE = UPDATE_FOLDER .. "/universal_manifest_revision.txt"
 
 	local controllerState = {
 		checking = false,
@@ -56,16 +68,44 @@ return function(ctx)
 		end
 	end
 
+	local function fetchManifestSource(path)
+		for _, url in ipairs(Constants.repositoryUrls(path)) do
+			local source, requestError = Http.requestOne(url)
+			if source and Http.validLuaBody(source) then
+				return source, url
+			end
+		end
+		return nil, "failed to fetch " .. path
+	end
+
 	local function fetchRemoteBuild()
 		local errors = {}
-		for _, url in ipairs(UPDATE_URLS) do
-			local source, requestError = Http.requestOne(url)
-			if source and Http.validSource(source, UNIVERSAL_MARKERS) then
-				return source, "hash:" .. Http.rollingHash(source), url
+		local fingerprints = {}
+		local mainSource
+
+		for _, path in ipairs(UPDATE_MANIFEST) do
+			local source, providerOrError = fetchManifestSource(path)
+			if not source then
+				table.insert(errors, tostring(providerOrError))
+			else
+				table.insert(fingerprints, path .. ":" .. Http.rollingHash(source))
+				if path == "universal.luau" then
+					mainSource = source
+				end
 			end
-			table.insert(errors, tostring(requestError or "request failed"))
 		end
-		return nil, nil, table.concat(errors, " | ")
+
+		if not mainSource then
+			return nil, nil, table.concat(errors, " | ")
+		end
+
+		if not Http.validSource(mainSource, UNIVERSAL_MARKERS) then
+			return nil, nil, "universal.luau failed marker validation"
+		end
+
+		table.sort(fingerprints)
+		local revision = Http.rollingHash(table.concat(fingerprints, "|"))
+		return mainSource, revision, "manifest(" .. tostring(#fingerprints) .. " files)"
 	end
 
 	local function readSavedRevision()

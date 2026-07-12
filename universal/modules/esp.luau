@@ -53,6 +53,22 @@ local BOUND_PARTS = {
 	"HumanoidRootPart",
 }
 
+local function getPlayerLabel(player)
+	local display = player.DisplayName
+	local username = player.Name
+
+	if type(display) ~= "string" or display == "" then
+		return username
+	end
+
+	local trimmed = string.match(display, "^%s*(.-)%s*$") or display
+	if trimmed == "" or string.match(trimmed, "^%?+$") then
+		return username
+	end
+
+	return trimmed
+end
+
 return function(ctx)
 	local espSection = ctx.columns.visualsLeft:AddSection("Player ESP")
 	espSection:AddToggle({text = "Enabled", flag = "Universal ESP", state = false})
@@ -123,7 +139,7 @@ return function(ctx)
 
 	local previewSection = ctx.columns.visualsRight:AddSection("ESP Preview")
 	previewSection:AddLabel("Live style preview")
-	previewSection:AddLabel("Nametag sits on the box top edge")
+	previewSection:AddLabel("Info card replaces nametag above the box")
 	ctx.refs.espPreviewSection = previewSection
 
 	local function setupESPRuntime()
@@ -284,9 +300,9 @@ return function(ctx)
 				end)
 			end
 
-			if entry.billboard then
+			if entry.screen and entry.screen.root then
 				pcall(function()
-					entry.billboard:Destroy()
+					entry.screen.root:Destroy()
 				end)
 			end
 
@@ -294,34 +310,66 @@ return function(ctx)
 			ctx.state.esp[player] = nil
 		end
 
-		local function createInfoCard(player, character, root)
-			local billboard = Instance.new("BillboardGui")
-			billboard.Name = "xanhub_universal_billboard"
-			billboard.Adornee = root
-			billboard.AlwaysOnTop = true
-			billboard.LightInfluence = 0
-			billboard.MaxDistance = 2000
-			billboard.Size = UDim2.fromOffset(156, 38)
-			billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.8, 0)
-			billboard.Enabled = false
-			billboard.Parent = character
+		local function createScreenElements(overlayRoot, player)
+			local root = Instance.new("Frame")
+			root.Name = "ESP_" .. player.Name
+			root.BackgroundTransparency = 1
+			root.Size = UDim2.fromOffset(0, 0)
+			root.Visible = false
+			root.ZIndex = 512
+			root.Parent = overlayRoot
+
+			local nametag = Instance.new("TextLabel")
+			nametag.Name = "Nametag"
+			nametag.BackgroundTransparency = 1
+			nametag.Size = UDim2.fromOffset(180, 16)
+			nametag.AnchorPoint = Vector2.new(0.5, 1)
+			nametag.Font = Enum.Font.GothamMedium
+			nametag.TextSize = 13
+			nametag.TextColor3 = Color3.fromRGB(245, 247, 255)
+			nametag.TextStrokeTransparency = 0.35
+			nametag.TextTruncate = Enum.TextTruncate.AtEnd
+			nametag.Visible = false
+			nametag.ZIndex = 514
+			nametag.Parent = root
+
+			local sideHealthBg = Instance.new("Frame")
+			sideHealthBg.Name = "SideHealthBg"
+			sideHealthBg.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
+			sideHealthBg.BorderSizePixel = 0
+			sideHealthBg.Visible = false
+			sideHealthBg.ZIndex = 513
+			sideHealthBg.Parent = root
+			ctx.createRounded(sideHealthBg, 2)
+
+			local sideHealthFill = Instance.new("Frame")
+			sideHealthFill.Name = "SideHealthFill"
+			sideHealthFill.AnchorPoint = Vector2.new(0, 1)
+			sideHealthFill.Position = UDim2.fromScale(0, 1)
+			sideHealthFill.Size = UDim2.fromScale(1, 1)
+			sideHealthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
+			sideHealthFill.BorderSizePixel = 0
+			sideHealthFill.ZIndex = 514
+			sideHealthFill.Parent = sideHealthBg
+			ctx.createRounded(sideHealthFill, 2)
 
 			local card = Instance.new("Frame")
-			card.AnchorPoint = Vector2.new(0.5, 0.5)
-			card.Position = UDim2.fromScale(0.5, 0.5)
+			card.Name = "InfoCard"
+			card.AnchorPoint = Vector2.new(0.5, 1)
 			card.Size = UDim2.fromOffset(150, 34)
 			card.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
 			card.BackgroundTransparency = 0.18
 			card.BorderSizePixel = 0
 			card.ClipsDescendants = true
-			card.Parent = billboard
+			card.Visible = false
+			card.ZIndex = 514
+			card.Parent = root
 			ctx.createRounded(card, 6)
 
-			local stroke = Instance.new("UIStroke")
-			stroke.Color = Color3.fromRGB(0, 170, 255)
-			stroke.Transparency = 0.28
-			stroke.Thickness = 1
-			stroke.Parent = card
+			local cardStroke = Instance.new("UIStroke")
+			cardStroke.Color = Color3.fromRGB(0, 170, 255)
+			cardStroke.Transparency = 0.28
+			cardStroke.Parent = card
 
 			local accent = Instance.new("Frame")
 			accent.Size = UDim2.new(0, 2, 1, 0)
@@ -343,10 +391,10 @@ return function(ctx)
 			nameLabel.Position = UDim2.fromOffset(18, 3)
 			nameLabel.Size = UDim2.new(1, -62, 0, 15)
 			nameLabel.BackgroundTransparency = 1
-			nameLabel.Text = player.DisplayName
+			nameLabel.Text = getPlayerLabel(player)
 			nameLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
 			nameLabel.TextSize = 12
-			nameLabel.Font = Enum.Font.Code
+			nameLabel.Font = Enum.Font.GothamMedium
 			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 			nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 			nameLabel.Parent = card
@@ -359,7 +407,7 @@ return function(ctx)
 			distanceLabel.Text = "0m"
 			distanceLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
 			distanceLabel.TextSize = 10
-			distanceLabel.Font = Enum.Font.Code
+			distanceLabel.Font = Enum.Font.GothamMedium
 			distanceLabel.TextXAlignment = Enum.TextXAlignment.Right
 			distanceLabel.Parent = card
 
@@ -378,7 +426,20 @@ return function(ctx)
 			healthFill.Parent = barBackground
 			ctx.createRounded(healthFill, 2)
 
-			return billboard, card, stroke, accent, targetMarker, nameLabel, distanceLabel, barBackground, healthFill
+			return {
+				root = root,
+				nametag = nametag,
+				card = card,
+				cardStroke = cardStroke,
+				accent = accent,
+				targetMarker = targetMarker,
+				name = nameLabel,
+				distance = distanceLabel,
+				healthBackground = barBackground,
+				health = healthFill,
+				sideHealthBg = sideHealthBg,
+				sideHealthFill = sideHealthFill,
+			}
 		end
 
 		local function createEntry(player, character)
@@ -402,22 +463,14 @@ return function(ctx)
 			highlight.Enabled = false
 			highlight.Parent = character
 
-			local billboard, card, stroke, accent, targetMarker, nameLabel, distanceLabel, barBackground, healthFill =
-				createInfoCard(player, character, root)
+			local overlayRoot = ctx.createOverlayRoot()
+			local screen = createScreenElements(overlayRoot, player)
 
 			local entry = {
 				character = character,
 				root = root,
 				highlight = highlight,
-				billboard = billboard,
-				card = card,
-				stroke = stroke,
-				accent = accent,
-				targetMarker = targetMarker,
-				name = nameLabel,
-				distance = distanceLabel,
-				healthBackground = barBackground,
-				health = healthFill,
+				screen = screen,
 				displayedHealth = 1,
 				drawings = nil,
 			}
@@ -426,53 +479,104 @@ return function(ctx)
 			return entry
 		end
 
-		local function updateInfoCard(entry, player, visible, displayColor, opacity, fade, isTarget, targetColor, distance, humanoid)
-			local showCard = visible and flag("Universal ESP Info Card", false)
-			entry.billboard.Enabled = showCard
-			if not showCard then
+		local function updateScreenOverlay(entry, player, bounds, visible, displayColor, opacity, fade, isTarget, targetColor, distance, humanoid)
+			local screen = entry.screen
+			if not screen or not screen.root then
 				return
 			end
 
-			entry.stroke.Color = displayColor
-			entry.stroke.Thickness = isTarget and 2 or 1
-			entry.stroke.Transparency = isTarget and 0.08 or (0.28 + fade * 0.52)
-			entry.accent.BackgroundColor3 = displayColor
-			entry.accent.Size = UDim2.new(0, isTarget and 4 or 2, 1, 0)
-			entry.accent.BackgroundTransparency = isTarget and 0 or (1 - opacity)
-			entry.card.BackgroundTransparency = isTarget and 0.06 or (0.18 + fade * 0.58)
-			entry.name.TextTransparency = isTarget and 0 or (1 - opacity)
-			entry.name.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
-			entry.distance.TextTransparency = 1 - opacity
-			entry.healthBackground.BackgroundTransparency = 0.08 + fade * 0.66
-			entry.health.BackgroundTransparency = 1 - opacity
-			entry.targetMarker.Visible = isTarget
-			entry.targetMarker.BackgroundColor3 = targetColor
-			entry.targetMarker.BackgroundTransparency = isTarget
-				and (0.08 + math.abs(math.sin(os.clock() * 5)) * 0.28)
-				or 1
-			entry.name.Text = player.DisplayName
-			entry.name.Visible = isTarget or flag("Universal ESP Names", true)
-			entry.distance.Visible = flag("Universal ESP Distance", true)
-			entry.healthBackground.Visible = flag("Universal ESP Health", true)
-			entry.distance.Text = tostring(math.floor(distance + 0.5)) .. "m"
+			local showInfoCard = visible and flag("Universal ESP Info Card", false)
+			local showNametag = visible and flag("Universal ESP Nametag", true) and not showInfoCard
+			local showSideHealth = visible
+				and flag("Universal ESP Health", true)
+				and not showInfoCard
 
+			screen.root.Visible = visible
+			if not visible then
+				screen.nametag.Visible = false
+				screen.card.Visible = false
+				screen.sideHealthBg.Visible = false
+				return
+			end
+
+			local label = getPlayerLabel(player)
 			local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
 			entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
-			entry.health.Size = UDim2.new(entry.displayedHealth, 0, 1, 0)
-			entry.health.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
+
+			local topLeft = bounds.topLeft
+			local bottomRight = bounds.bottomRight
+			local width = bottomRight.X - topLeft.X
+			local height = bottomRight.Y - topLeft.Y
+			local anchor = bounds.topCenter
+
+			screen.nametag.Visible = showNametag
+			screen.card.Visible = showInfoCard
+			screen.sideHealthBg.Visible = showSideHealth
+
+			if showNametag then
+				local nametagSize = numberFlag("Universal ESP Nametag Size", 13)
+				screen.nametag.Position = UDim2.fromOffset(anchor.X, anchor.Y - 2)
+				screen.nametag.TextSize = nametagSize
+				screen.nametag.TextTransparency = 1 - opacity
+				screen.nametag.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
+				if flag("Universal ESP Distance", true) then
+					screen.nametag.Text = string.format("%s  [%dm]", label, math.floor(distance + 0.5))
+				else
+					screen.nametag.Text = label
+				end
+			end
+
+			if showSideHealth then
+				local barHeight = math.clamp(height * 0.84, 28, height)
+				local barWidth = 3
+				local barX = topLeft.X - 6
+				local barY = topLeft.Y + (height - barHeight) * 0.5
+
+				screen.sideHealthBg.Position = UDim2.fromOffset(barX, barY)
+				screen.sideHealthBg.Size = UDim2.fromOffset(barWidth, barHeight)
+				screen.sideHealthBg.BackgroundTransparency = 0.08 + fade * 0.66
+				screen.sideHealthFill.Size = UDim2.new(1, 0, entry.displayedHealth, 0)
+				screen.sideHealthFill.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
+				screen.sideHealthFill.BackgroundTransparency = 1 - opacity
+			end
+
+			if showInfoCard then
+				screen.card.Position = UDim2.fromOffset(anchor.X, anchor.Y - 2)
+				screen.cardStroke.Color = displayColor
+				screen.cardStroke.Thickness = isTarget and 2 or 1
+				screen.cardStroke.Transparency = isTarget and 0.08 or (0.28 + fade * 0.52)
+				screen.accent.BackgroundColor3 = displayColor
+				screen.accent.Size = UDim2.new(0, isTarget and 4 or 2, 1, 0)
+				screen.accent.BackgroundTransparency = isTarget and 0 or (1 - opacity)
+				screen.card.BackgroundTransparency = isTarget and 0.06 or (0.18 + fade * 0.58)
+				screen.name.TextTransparency = isTarget and 0 or (1 - opacity)
+				screen.name.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
+				screen.distance.TextTransparency = 1 - opacity
+				screen.healthBackground.BackgroundTransparency = 0.08 + fade * 0.66
+				screen.health.BackgroundTransparency = 1 - opacity
+				screen.targetMarker.Visible = isTarget
+				screen.targetMarker.BackgroundColor3 = targetColor
+				screen.targetMarker.BackgroundTransparency = isTarget
+					and (0.08 + math.abs(math.sin(os.clock() * 5)) * 0.28)
+					or 1
+				screen.name.Text = label
+				screen.name.Visible = isTarget or flag("Universal ESP Names", true)
+				screen.distance.Visible = flag("Universal ESP Distance", true)
+				screen.healthBackground.Visible = flag("Universal ESP Health", true)
+				screen.distance.Text = tostring(math.floor(distance + 0.5)) .. "m"
+				screen.health.Size = UDim2.new(entry.displayedHealth, 0, 1, 0)
+				screen.health.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
+			end
 		end
 
 		local function updateScreenEsp(entry, player, camera, bounds, displayColor, skeletonColor, opacity, fade, distance, humanoid, isTarget)
 			local drawings = ensureDrawings(entry)
 			local boxThickness = numberFlag("Universal ESP Box Thickness", 1.5)
 			local lineThickness = numberFlag("Universal ESP Line Thickness", 1.5)
-			local nametagSize = numberFlag("Universal ESP Nametag Size", 13)
 			local showBox = flag("Universal ESP Box", true)
 			local showFill = flag("Universal ESP Box Fill", false)
 			local showSkeleton = flag("Universal ESP Skeleton", false)
-			local showNametag = flag("Universal ESP Nametag", true)
 			local showTracer = flag("Universal ESP Tracer", false)
-			local showHealth = flag("Universal ESP Health", true) and showNametag and not flag("Universal ESP Info Card", false)
 
 			local topLeft = bounds.topLeft
 			local bottomRight = bounds.bottomRight
@@ -509,42 +613,9 @@ return function(ctx)
 				drawings.tracer.Transparency = math.clamp(0.2 + fade * 0.55, 0.2, 0.9)
 			end
 
-			if drawings.nametag then
-				drawings.nametag.Visible = showNametag
-				drawings.nametag.Text = player.DisplayName
-				drawings.nametag.Size = nametagSize
-				drawings.nametag.Center = true
-				drawings.nametag.Outline = true
-				drawings.nametag.Font = Drawing.Fonts and Drawing.Fonts.Monospace or 2
-				drawings.nametag.Position = bounds.topCenter - Vector2.new(0, nametagSize + 2)
-				drawings.nametag.Color = isTarget and Color3.fromRGB(255, 245, 245) or Color3.fromRGB(245, 247, 255)
-				drawings.nametag.Transparency = 1 - opacity
-			end
-
-			if drawings.healthBg and drawings.healthFill and showHealth then
-				local barWidth = math.clamp(width * 0.72, 34, 120)
-				local barY = bounds.topCenter.Y - nametagSize - 8
-				local barX = bounds.topCenter.X - barWidth * 0.5
-				local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
-				entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
-
-				drawings.healthBg.Visible = true
-				drawings.healthBg.From = Vector2.new(barX, barY)
-				drawings.healthBg.To = Vector2.new(barX + barWidth, barY)
-				drawings.healthBg.Color = Color3.fromRGB(28, 33, 43)
-				drawings.healthBg.Thickness = 3
-				drawings.healthBg.Transparency = 1 - opacity * 0.85
-
-				drawings.healthFill.Visible = true
-				drawings.healthFill.From = Vector2.new(barX, barY)
-				drawings.healthFill.To = Vector2.new(barX + barWidth * entry.displayedHealth, barY)
-				drawings.healthFill.Color = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
-				drawings.healthFill.Thickness = 3
-				drawings.healthFill.Transparency = 1 - opacity
-			else
-				hideDrawing(drawings.healthBg)
-				hideDrawing(drawings.healthFill)
-			end
+			hideDrawing(drawings.nametag)
+			hideDrawing(drawings.healthBg)
+			hideDrawing(drawings.healthFill)
 
 			local pairsList = getBonePairs(entry.character)
 			for index, line in ipairs(drawings.skeleton) do
@@ -572,21 +643,26 @@ return function(ctx)
 					end
 				end
 			end
-
-			if showNametag and flag("Universal ESP Distance", true) and drawings.nametag then
-				drawings.nametag.Text = string.format("%s  [%dm]", player.DisplayName, math.floor(distance + 0.5))
-			end
 		end
 
 		local function hideEntryDrawings(entry)
 			if entry.highlight then
 				entry.highlight.Enabled = false
 			end
-			if entry.billboard then
-				entry.billboard.Enabled = false
+			if entry.screen and entry.screen.root then
+				entry.screen.root.Visible = false
 			end
-			destroyDrawings(entry.drawings)
-			entry.drawings = nil
+			if entry.drawings then
+				for key, value in pairs(entry.drawings) do
+					if type(value) == "table" then
+						for _, item in ipairs(value) do
+							hideDrawing(item)
+						end
+					else
+						hideDrawing(value)
+					end
+				end
+			end
 		end
 
 		local function shouldShowPlayer(player, distance, enabled, isTarget, espSameTeam, targetSameTeam, maxDistance, targetMaxDistance)
@@ -666,8 +742,8 @@ return function(ctx)
 							if entry.highlight then
 								entry.highlight.Enabled = false
 							end
-							if entry.billboard then
-								entry.billboard.Enabled = false
+							if entry.screen and entry.screen.root then
+								entry.screen.root.Visible = false
 							end
 							if entry.drawings then
 								for key, value in pairs(entry.drawings) do
@@ -701,19 +777,35 @@ return function(ctx)
 							entry.highlight.OutlineTransparency = 0.28 + fade * 0.55
 
 							local onScreen, bounds = getViewportBounds(camera, character)
-							if onScreen and hasDrawing then
-								updateScreenEsp(
+							if onScreen then
+								if hasDrawing then
+									updateScreenEsp(
+										entry,
+										player,
+										camera,
+										bounds,
+										displayColor,
+										skeletonColor,
+										opacity,
+										fade,
+										distance,
+										humanoid,
+										isTarget
+									)
+								end
+
+								updateScreenOverlay(
 									entry,
 									player,
-									camera,
 									bounds,
+									true,
 									displayColor,
-									skeletonColor,
 									opacity,
 									fade,
+									isTarget,
+									targetColor,
 									distance,
-									humanoid,
-									isTarget
+									humanoid
 								)
 							else
 								if entry.drawings then
@@ -728,8 +820,6 @@ return function(ctx)
 									end
 								end
 							end
-
-							updateInfoCard(entry, player, visible, displayColor, opacity, fade, isTarget, targetColor, distance, humanoid)
 						end
 					end
 				end
@@ -741,6 +831,11 @@ return function(ctx)
 			box = nil,
 			boxFill = nil,
 			nametag = nil,
+			infoCard = nil,
+			cardName = nil,
+			cardDistance = nil,
+			cardHealthBg = nil,
+			cardHealthFill = nil,
 			healthBg = nil,
 			healthFill = nil,
 			skeleton = {},
@@ -835,25 +930,83 @@ return function(ctx)
 			preview.nametag = Instance.new("TextLabel")
 			preview.nametag.BackgroundTransparency = 1
 			preview.nametag.Size = UDim2.new(1, 0, 0, 14)
-			preview.nametag.Position = UDim2.fromOffset(0, -18)
-			preview.nametag.Font = Enum.Font.Code
+			preview.nametag.AnchorPoint = Vector2.new(0.5, 1)
+			preview.nametag.Position = UDim2.new(0.5, 0, 0, -2)
+			preview.nametag.Font = Enum.Font.GothamMedium
 			preview.nametag.TextSize = 12
 			preview.nametag.Text = "Preview"
 			preview.nametag.TextColor3 = Color3.fromRGB(245, 247, 255)
 			preview.nametag.Parent = preview.box
 
+			preview.infoCard = Instance.new("Frame")
+			preview.infoCard.AnchorPoint = Vector2.new(0.5, 1)
+			preview.infoCard.Position = UDim2.new(0.5, 0, 0, -2)
+			preview.infoCard.Size = UDim2.fromOffset(118, 30)
+			preview.infoCard.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
+			preview.infoCard.BackgroundTransparency = 0.18
+			preview.infoCard.BorderSizePixel = 0
+			preview.infoCard.Visible = false
+			preview.infoCard.Parent = preview.box
+			ctx.createRounded(preview.infoCard, 6)
+
+			local previewCardStroke = Instance.new("UIStroke")
+			previewCardStroke.Color = Color3.fromRGB(0, 170, 255)
+			previewCardStroke.Transparency = 0.28
+			previewCardStroke.Parent = preview.infoCard
+
+			preview.cardName = Instance.new("TextLabel")
+			preview.cardName.BackgroundTransparency = 1
+			preview.cardName.Position = UDim2.fromOffset(8, 2)
+			preview.cardName.Size = UDim2.new(1, -36, 0, 14)
+			preview.cardName.Font = Enum.Font.GothamMedium
+			preview.cardName.TextSize = 11
+			preview.cardName.Text = "Preview"
+			preview.cardName.TextColor3 = Color3.fromRGB(245, 247, 255)
+			preview.cardName.TextXAlignment = Enum.TextXAlignment.Left
+			preview.cardName.Parent = preview.infoCard
+
+			preview.cardDistance = Instance.new("TextLabel")
+			preview.cardDistance.BackgroundTransparency = 1
+			preview.cardDistance.AnchorPoint = Vector2.new(1, 0)
+			preview.cardDistance.Position = UDim2.new(1, -6, 0, 2)
+			preview.cardDistance.Size = UDim2.fromOffset(28, 14)
+			preview.cardDistance.Font = Enum.Font.GothamMedium
+			preview.cardDistance.TextSize = 10
+			preview.cardDistance.Text = "64m"
+			preview.cardDistance.TextColor3 = Color3.fromRGB(160, 170, 190)
+			preview.cardDistance.TextXAlignment = Enum.TextXAlignment.Right
+			preview.cardDistance.Parent = preview.infoCard
+
+			preview.cardHealthBg = Instance.new("Frame")
+			preview.cardHealthBg.Position = UDim2.fromOffset(8, 22)
+			preview.cardHealthBg.Size = UDim2.new(1, -16, 0, 3)
+			preview.cardHealthBg.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
+			preview.cardHealthBg.BorderSizePixel = 0
+			preview.cardHealthBg.Parent = preview.infoCard
+			ctx.createRounded(preview.cardHealthBg, 2)
+
+			preview.cardHealthFill = Instance.new("Frame")
+			preview.cardHealthFill.Size = UDim2.new(0.72, 0, 1, 0)
+			preview.cardHealthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
+			preview.cardHealthFill.BorderSizePixel = 0
+			preview.cardHealthFill.Parent = preview.cardHealthBg
+			ctx.createRounded(preview.cardHealthFill, 2)
+
 			preview.healthBg = Instance.new("Frame")
 			preview.healthBg.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
 			preview.healthBg.BorderSizePixel = 0
-			preview.healthBg.Size = UDim2.fromOffset(54, 3)
-			preview.healthBg.Position = UDim2.fromOffset(10, -8)
+			preview.healthBg.AnchorPoint = Vector2.new(1, 0.5)
+			preview.healthBg.Position = UDim2.new(0, -4, 0.5, 0)
+			preview.healthBg.Size = UDim2.fromOffset(3, 112)
 			preview.healthBg.Parent = preview.box
 			ctx.createRounded(preview.healthBg, 2)
 
 			preview.healthFill = Instance.new("Frame")
+			preview.healthFill.AnchorPoint = Vector2.new(0, 1)
+			preview.healthFill.Position = UDim2.fromScale(0, 1)
 			preview.healthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
 			preview.healthFill.BorderSizePixel = 0
-			preview.healthFill.Size = UDim2.new(0.72, 0, 1, 0)
+			preview.healthFill.Size = UDim2.new(1, 0, 0.72, 0)
 			preview.healthFill.Parent = preview.healthBg
 			ctx.createRounded(preview.healthFill, 2)
 
@@ -890,21 +1043,32 @@ return function(ctx)
 			local showBox = flag("Universal ESP Box", true)
 			local showFill = flag("Universal ESP Box Fill", false)
 			local showSkeleton = flag("Universal ESP Skeleton", false)
-			local showNametag = flag("Universal ESP Nametag", true)
-			local showHealth = flag("Universal ESP Health", true) and not flag("Universal ESP Info Card", false)
+			local showInfoCard = flag("Universal ESP Info Card", false)
+			local showNametag = flag("Universal ESP Nametag", true) and not showInfoCard
+			local showSideHealth = flag("Universal ESP Health", true) and not showInfoCard
+			local showCardHealth = flag("Universal ESP Health", true) and showInfoCard
 
 			preview.box.Visible = showBox
 			preview.boxFill.Visible = showBox and showFill
 			preview.nametag.Visible = showNametag
-			preview.healthBg.Visible = showHealth
-			preview.healthFill.Visible = showHealth
+			preview.infoCard.Visible = showInfoCard
+			preview.healthBg.Visible = showSideHealth
+			preview.healthFill.Visible = showSideHealth
+			preview.cardHealthBg.Visible = showCardHealth
+			preview.cardHealthFill.Visible = showCardHealth
+			preview.cardName.Visible = showInfoCard and flag("Universal ESP Names", true)
+			preview.cardDistance.Visible = showInfoCard and flag("Universal ESP Distance", true)
 
 			local boxStroke = preview.box:FindFirstChildOfClass("UIStroke")
 			if boxStroke then
 				boxStroke.Color = color
 			end
+			local cardStroke = preview.infoCard:FindFirstChildOfClass("UIStroke")
+			if cardStroke then
+				cardStroke.Color = color
+			end
 			preview.boxFill.BackgroundColor3 = color
-			preview.nametag.Text = showNametag and "Preview" or ""
+			preview.nametag.Text = showNametag and "Preview  [64m]" or ""
 			preview.nametag.TextSize = numberFlag("Universal ESP Nametag Size", 13)
 
 			for _, line in ipairs(preview.skeleton) do
@@ -933,6 +1097,19 @@ return function(ctx)
 					for _, entry in pairs(ctx.state.esp) do
 						hideEntryDrawings(entry)
 					end
+				end
+			end
+		end
+
+		local infoCardControl = ctx.option("Universal ESP Info Card")
+		if infoCardControl then
+			local previousCallback = infoCardControl.callback
+			infoCardControl.callback = function(enabled)
+				if enabled then
+					ctx.setToggle("Universal ESP Nametag", false)
+				end
+				if previousCallback then
+					previousCallback(enabled)
 				end
 			end
 		end
