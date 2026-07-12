@@ -1,10 +1,12 @@
 --[[
     xanhub | gakuran | skip death screen
 
-    Death UI is PlayerScripts.respawnstuff:
-      - Character attribute Dead → DeathUI ("RESTART YOUR HEART")
-      - HeartButton must be clicked 7 times → RespawnRE:FireServer()
-    We auto-complete the heart minigame and fire every known respawn remote.
+    Death controller (SpawnServiceClient-style object bound to DeathUI.HeartButton):
+      - 7 heart clicks → self:_doRespawn()
+      - _doRespawn fires Remotes.SpawnRequest + transition cleanup
+
+    Instant skip: locate that controller and call _doRespawn() directly
+    (verified live — no heart presses needed).
 ]]
 
 return function(ctx)
@@ -24,19 +26,20 @@ return function(ctx)
 	local st = ctx.state.deathSkip
 	st.busy = false
 	st.lastSkipAt = 0
+	st.controller = nil
 
 	local section = columns.homeRight:AddSection("Death")
 	section:AddToggle({
 		text = "Skip Death Screen",
 		flag = "Gakuran Skip Death",
 		state = false,
-		tip = "Auto-complete the heart minigame and respawn when Dead / DeathUI shows",
+		tip = "When death UI shows, skip instantly via game _doRespawn (no heart spam)",
 	})
 	section:AddToggle({
-		text = "Instant (no heart spam)",
+		text = "Instant Respawn",
 		flag = "Gakuran Skip Death Instant",
 		state = true,
-		tip = "Fire respawn remotes immediately instead of simulating 7 heart clicks",
+		tip = "Call death controller :_doRespawn() + SpawnRequest immediately",
 	})
 	section:AddButton({
 		text = "Skip Death Now",
@@ -96,6 +99,10 @@ return function(ctx)
 		if character and character:GetAttribute("Dead") == true then
 			return true, "attr"
 		end
+		-- Controller flag
+		if type(st.controller) == "table" and st.controller._dead == true then
+			return true, "controller"
+		end
 		return false, nil
 	end
 
@@ -133,104 +140,164 @@ return function(ctx)
 		end)
 	end
 
-	local function fireRespawnRemotes()
-		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-		local tried = {}
-
-		local function tryFire(inst, label)
-			if not inst then
-				return false
-			end
-			local ok = false
-			if inst:IsA("RemoteEvent") then
-				ok = pcall(function()
-					inst:FireServer()
-				end)
-			elseif inst:IsA("RemoteFunction") then
-				ok = pcall(function()
-					inst:InvokeServer()
-				end)
-			elseif inst:IsA("UnreliableRemoteEvent") then
-				ok = pcall(function()
-					inst:FireServer()
-				end)
-			end
-			table.insert(tried, label .. (ok and " ok" or " fail"))
-			return ok
-		end
-
-		-- Exact remote from PlayerScripts.respawnstuff dorespawn()
-		tryFire(ReplicatedStorage:FindFirstChild("RespawnRE"), "RespawnRE")
-		tryFire(ReplicatedStorage:FindFirstChild("RespawnRE", true), "RespawnRE*")
-
-		if remotes then
-			tryFire(remotes:FindFirstChild("LoadCharacter"), "LoadCharacter")
-			tryFire(remotes:FindFirstChild("SpawnRequest"), "SpawnRequest")
-			tryFire(remotes:FindFirstChild("Revive"), "Revive")
-		end
-
-		return tried
+	local function looksLikeDeathController(t)
+		return type(t) == "table"
+			and type(t._doRespawn) == "function"
+			and (t._spawnRemote ~= nil or t._heartBtn ~= nil or t._gui ~= nil)
 	end
 
-	local function clickHeartOnce()
-		local ui = getDeathUi()
-		if not ui then
-			return false
+	local function resolveFromUpvalue(fn)
+		if type(fn) ~= "function" then
+			return nil
 		end
-		local frame = ui:FindFirstChild("Frame")
-		local btn = frame and frame:FindFirstChild("HeartButton")
-		if not btn then
-			return false
+		if type(getupvalues) == "function" then
+			local ok, ups = pcall(getupvalues, fn)
+			if ok and type(ups) == "table" then
+				for _, v in pairs(ups) do
+					if looksLikeDeathController(v) then
+						return v
+					end
+					-- sometimes wrapped as { [1] = controller }
+					if type(v) == "table" then
+						for _, inner in pairs(v) do
+							if looksLikeDeathController(inner) then
+								return inner
+							end
+						end
+					end
+				end
+			end
+		end
+		if type(getupvalue) == "function" then
+			for i = 1, 12 do
+				local ok, a, b = pcall(getupvalue, fn, i)
+				if not ok then
+					break
+				end
+				local val = if b ~= nil then b else a
+				if looksLikeDeathController(val) then
+					return val
+				end
+			end
+		end
+		if type(debug) == "table" and type(debug.getupvalue) == "function" then
+			for i = 1, 12 do
+				local ok, name, val = pcall(debug.getupvalue, fn, i)
+				if not ok or name == nil then
+					break
+				end
+				if looksLikeDeathController(val) then
+					return val
+				end
+			end
+		end
+		return nil
+	end
+
+	local function findDeathController()
+		if looksLikeDeathController(st.controller) then
+			return st.controller
 		end
 
-		if type(getconnections) == "function" then
-			local fired = false
+		-- Primary: HeartButton connection upvalue (live-verified path)
+		local ui = getDeathUi()
+		local btn = ui and ui:FindFirstChild("Frame") and ui.Frame:FindFirstChild("HeartButton")
+		if btn and type(getconnections) == "function" then
 			for _, signalName in ipairs({ "MouseButton1Click", "Activated", "MouseButton1Down" }) do
 				local ok, list = pcall(function()
 					return getconnections(btn[signalName])
 				end)
 				if ok and type(list) == "table" then
 					for _, conn in ipairs(list) do
-						pcall(function()
-							if conn.Function then
-								conn.Function()
-								fired = true
-							elseif type(conn.Fire) == "function" then
-								conn:Fire()
-								fired = true
-							end
-						end)
+						local ctrl = resolveFromUpvalue(conn.Function)
+						if ctrl then
+							st.controller = ctrl
+							return ctrl
+						end
 					end
 				end
 			end
-			if fired then
-				return true
+		end
+
+		-- Fallback: scan getgc for the controller table
+		if type(getgc) == "function" then
+			local ok, objects = pcall(getgc, true)
+			if ok and type(objects) == "table" then
+				for _, obj in ipairs(objects) do
+					if looksLikeDeathController(obj) then
+						-- Prefer the one bound to local player / current DeathUI
+						local guiOk = true
+						if obj._gui and obj._gui.Parent == nil then
+							guiOk = false
+						end
+						if guiOk then
+							st.controller = obj
+							return obj
+						end
+					end
+				end
 			end
 		end
 
-		-- Fallback: synthetic activation if the control supports it
+		return nil
+	end
+
+	local function instantDoRespawn()
+		local ctrl = findDeathController()
+		if not ctrl then
+			return false, "no death controller"
+		end
+
+		-- Clear minigame state so _doRespawn isn't blocked by in-flight flags
+		pcall(function()
+			ctrl._clicks = 7
+			ctrl._busy = false
+			ctrl._respawnInFlight = false
+		end)
+
+		local ok, err = pcall(function()
+			ctrl:_doRespawn()
+		end)
+		if ok then
+			return true, "doRespawn"
+		end
+		return false, tostring(err)
+	end
+
+	local function fireSpawnRequest()
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		local spawnRequest = remotes and remotes:FindFirstChild("SpawnRequest")
+		if not spawnRequest then
+			return false
+		end
 		return pcall(function()
-			if typeof(btn.Activate) == "function" then
-				btn:Activate()
-			end
+			spawnRequest:FireServer()
 		end)
 	end
 
-	local function completeHeartMinigame()
-		-- respawnstuff onclick requires 7 clicks; each click locks ~0.7s via v11.
-		for i = 1, 10 do
-			clickHeartOnce()
-			local ui = getDeathUi()
-			local msg = ui and ui:FindFirstChild("Frame") and ui.Frame:FindFirstChild("MessageText")
-			if msg and type(msg.Text) == "string" and msg.Text:upper():find("RESTORED", 1, true) then
-				return true
-			end
-			if not isDeathScreenActive() then
-				return true
-			end
-			task.wait(0.75)
+	local function fireFallbackRemotes()
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if not remotes then
+			return
 		end
-		return not isDeathScreenActive()
+		for _, name in ipairs({ "SpawnRequest", "LoadCharacter", "Revive" }) do
+			local inst = remotes:FindFirstChild(name)
+			if inst then
+				pcall(function()
+					if inst:IsA("RemoteEvent") then
+						inst:FireServer()
+					elseif inst:IsA("RemoteFunction") then
+						inst:InvokeServer()
+					end
+				end)
+			end
+		end
+		local legacy = ReplicatedStorage:FindFirstChild("RespawnRE")
+		if legacy then
+			pcall(function()
+				legacy:FireServer()
+			end)
+		end
 	end
 
 	local function skipDeath(force)
@@ -246,47 +313,80 @@ return function(ctx)
 		end
 
 		local now = os.clock()
-		if not force and (now - (st.lastSkipAt or 0)) < 1.2 then
+		if not force and (now - (st.lastSkipAt or 0)) < 0.8 then
 			return
 		end
 
 		st.busy = true
 		st.lastSkipAt = now
-		setStatus("skipping…")
+		setStatus("instant…")
 
 		task.spawn(function()
+			local method = "none"
 			local ok, err = pcall(function()
-				-- Always complete the 7-click heart path: dorespawn() only runs after v10 >= 7.
-				-- Instant also blasts remotes first in case RespawnRE/LoadCharacter is enough.
 				if flag("Gakuran Skip Death Instant", true) then
-					fireRespawnRemotes()
+					local did, how = instantDoRespawn()
+					if did then
+						method = how or "doRespawn"
+					else
+						-- Direct remote (same as controller uses)
+						if fireSpawnRequest() then
+							method = "SpawnRequest"
+						else
+							fireFallbackRemotes()
+							method = "fallback-remotes"
+						end
+					end
+				else
+					-- Non-instant: still prefer controller, else heart path
+					local did = instantDoRespawn()
+					if did then
+						method = "doRespawn"
+					else
+						method = "heart-fallback"
+						-- Last resort: 7 spaced clicks
+						local ui = getDeathUi()
+						local btn = ui and ui:FindFirstChild("Frame") and ui.Frame:FindFirstChild("HeartButton")
+						if btn and type(getconnections) == "function" then
+							for _ = 1, 8 do
+								for _, conn in ipairs(getconnections(btn.MouseButton1Click)) do
+									pcall(function()
+										if conn.Function then
+											conn.Function()
+										end
+									end)
+								end
+								if not isDeathScreenActive() then
+									break
+								end
+								task.wait(0.72)
+							end
+						end
+						fireSpawnRequest()
+					end
 				end
-				completeHeartMinigame()
-				fireRespawnRemotes()
 
-				-- Local cleanup so the overlay never sticks if remotes lag
 				clearDeathEffects()
 
-				-- Wait briefly for character refresh
 				local t0 = os.clock()
-				while os.clock() - t0 < 2 do
+				while os.clock() - t0 < 1.5 do
 					if not isDeathScreenActive() then
 						break
 					end
-					task.wait(0.1)
+					task.wait(0.05)
 				end
 			end)
 
 			if ok then
 				if isDeathScreenActive() then
-					setStatus("tried · still on death UI")
+					setStatus("tried · " .. method)
 					if ctx.notify then
-						ctx.notify("Death skip fired — still on screen (server may block)", 3)
+						ctx.notify("Death skip (" .. method .. ") — still on screen", 3)
 					end
 				else
-					setStatus("skipped")
+					setStatus("skipped · " .. method)
 					if ctx.notify then
-						ctx.notify("Death screen skipped", 2)
+						ctx.notify("Death skipped instantly", 2)
 					end
 				end
 			else
@@ -300,7 +400,6 @@ return function(ctx)
 	st.skipNow = skipDeath
 
 	local function setup()
-		-- Watch Dead attribute on current + future characters
 		local function watchCharacter(character)
 			if not character then
 				return
@@ -308,12 +407,16 @@ return function(ctx)
 			ctx.addConnection(character:GetAttributeChangedSignal("Dead"), function()
 				if character:GetAttribute("Dead") == true then
 					task.defer(function()
+						-- DeathUI may take a frame to build/bind
+						task.wait(0.05)
+						findDeathController()
 						skipDeath(false)
 					end)
 				end
 			end)
 			if character:GetAttribute("Dead") == true and flag("Gakuran Skip Death", false) then
 				task.defer(function()
+					findDeathController()
 					skipDeath(false)
 				end)
 			end
@@ -326,13 +429,21 @@ return function(ctx)
 		ctx.addConnection(LocalPlayer.CharacterAdded, function(character)
 			task.defer(function()
 				watchCharacter(character)
-				-- Workspace.Players clone can lag behind
 				task.wait(0.25)
 				watchCharacter(getCharacter())
 			end)
 		end)
 
-		-- Poll DeathUI in case attribute is missed
+		-- Cache controller once DeathUI exists
+		task.defer(function()
+			for _ = 1, 30 do
+				if findDeathController() then
+					break
+				end
+				task.wait(0.2)
+			end
+		end)
+
 		local accum = 0
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
@@ -342,11 +453,12 @@ return function(ctx)
 				return
 			end
 			accum = accum + (tonumber(dt) or 0)
-			if accum < 0.2 then
+			if accum < 0.15 then
 				return
 			end
 			accum = 0
 			if isDeathScreenActive() then
+				findDeathController()
 				skipDeath(false)
 			end
 		end)
