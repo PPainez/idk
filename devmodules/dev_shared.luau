@@ -364,7 +364,14 @@ return function(ctx)
                 end
             end
         end
-        object.Parent = parent
+        if parent ~= nil then
+            local ok = pcall(function()
+                object.Parent = parent
+            end)
+            if not ok then
+                -- leave unparented; callers that require a host should reparent / rebuild
+            end
+        end
         return object
     end
 

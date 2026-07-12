@@ -238,12 +238,12 @@ return function(ctx)
 			}) == true
 		end
 
-		-- Always mirror to the built-in library toast as a reliable fallback.
-		if library and type(library.SendNotification) == "function" and library.base then
-			pcall(function()
+		-- Fallback only — avoid double fire (Plugin parent warn spam on every parry).
+		if not sent and library and type(library.SendNotification) == "function" and library.base then
+			local ok = pcall(function()
 				library:SendNotification(2.4, body:gsub("\n", " · "))
 			end)
-			sent = true
+			sent = ok
 		end
 
 		if not sent then
@@ -746,25 +746,12 @@ return function(ctx)
 		end
 		local pure = tostring(id or ""):match("%d+") or tostring(id or "")
 
-		-- Drop known walk/run/idle IDs even when the track is named "Animation" (common on remotes).
-		if pure ~= "" and st.db and type(st.db.lookup) == "function" then
-			-- AttackDB.isLocomotionId available via module if we stashed it
+		-- Drop walk/run/idle/emote/instrument IDs even when the track is named "Animation".
+		local isLoco = isLocomotionName(name)
+		if not isLoco and pure ~= "" and st.attackDbMod and type(st.attackDbMod.isLocomotionId) == "function" then
+			isLoco = st.attackDbMod.isLocomotionId(pure)
 		end
-		local locomotionIds = {
-			["99661732639863"] = true,
-			["122843775061652"] = true,
-			["83600639547203"] = true,
-			["85823794654077"] = true,
-			["117293898907979"] = true,
-			["137015026151472"] = true,
-			["76945839486275"] = true,
-			["111699625251889"] = true,
-			["91658474738843"] = true,
-			["135133599113049"] = true,
-			["130267921858674"] = true,
-			["78370245490631"] = true,
-		}
-		if locomotionIds[pure] or isLocomotionName(name) then
+		if isLoco then
 			st.seenTracks[track] = true
 			return
 		end
@@ -969,6 +956,7 @@ return function(ctx)
 			end
 		end
 		if type(AttackDBMod) == "table" and type(AttackDBMod.create) == "function" then
+			st.attackDbMod = AttackDBMod
 			st.db = AttackDBMod.create()
 		else
 			st.db = {

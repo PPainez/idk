@@ -10,25 +10,150 @@
 
 local AttackDB = {}
 
+function AttackDB.extractId(animationId)
+	if type(animationId) == "number" then
+		return tostring(math.floor(animationId))
+	end
+	if type(animationId) ~= "string" then
+		return nil
+	end
+	return animationId:match("%d+")
+end
+
 -- Locomotion / non-attack IDs to ignore even when the anim object is named "Animation".
+-- Hardcoded seed covers common spam from combat logs; rebuild also harvests Movement/Emotes/Items.
 local LOCOMOTION_IDS = {
+	-- Movement
 	["99661732639863"] = true, -- Idle1
 	["122843775061652"] = true, -- Idle2
 	["83600639547203"] = true, -- MaleWalk
 	["85823794654077"] = true, -- MaleRun
 	["117293898907979"] = true, -- FemaleWalk
 	["137015026151472"] = true, -- FemaleRun
+	["132695091086148"] = true, -- Backpedal
+	["109816855387997"] = true, -- DashBack
+	["106268941365574"] = true, -- DashRight
+	["106858554878235"] = true, -- DashBack alt
+	["105936443843545"] = true, -- GoalboundFemaleRun
+	["115103415399723"] = true, -- FemaleWalk2
+	["101681156645386"] = true, -- ToolNone
+	["101758912482710"] = true, -- Fall
+	["80742414334394"] = true, -- Jump
+	["96856467950733"] = true, -- Sit
+	-- Style walk / idle
 	["76945839486275"] = true, -- style Walk (Muay/Kure)
 	["111699625251889"] = true, -- Wrestling Walk
 	["91658474738843"] = true, -- Wrestling Walk alt
 	["135133599113049"] = true, -- Boxing Walk
 	["130267921858674"] = true, -- Karate Walk
 	["78370245490631"] = true, -- default Walk
-	["101681156645386"] = true, -- ToolNone
-	["101758912482710"] = true, -- Fall
-	["80742414334394"] = true, -- Jump
-	["96856467950733"] = true, -- Sit
+	["113331696487725"] = true, -- Basic Walk
+	["73766443218740"] = true, -- Wrestling Idle
+	["101161965631044"] = true, -- Kure Idle
+	["102982320608759"] = true, -- MuayThai Idle
+	["100542767551399"] = true, -- Striker Idle
+	["108636808436488"] = true, -- Hakari Idle
+	["108862846290180"] = true, -- Capoeira Idle
+	["115351567178592"] = true, -- HakariOther Idle
+	["113694931951279"] = true, -- Base Idle
+	-- Block / non-offensive combat
+	["118147060185189"] = true, -- Blocking
+	["108925352376719"] = true, -- Kure BlockHit
+	-- Instruments / dances / emotes (flooded logs while players idle with bass/guitar)
+	["118268327660267"] = true, -- Bass Dance1
+	["138707781762636"] = true, -- Guitar Dance1
+	["89040957520196"] = true, -- Bass Strumming1
+	["81384818367841"] = true, -- Emote Sit ChillStartup
 }
+
+local function markLocomotionId(animationId)
+	local id = AttackDB.extractId(animationId)
+	if id then
+		LOCOMOTION_IDS[id] = true
+	end
+end
+
+local function harvestNonAttackAnims(root)
+	if not root then
+		return
+	end
+	local ok, list = pcall(function()
+		return root:GetDescendants()
+	end)
+	if not ok or type(list) ~= "table" then
+		return
+	end
+	for _, d in ipairs(list) do
+		if d:IsA("Animation") then
+			local n = d.Name
+			-- Never blackhole actual attack names even if under Items by mistake.
+			if n:find("M1")
+				or n:find("M2")
+				or n:find("EHit")
+				or n:find("Grapple")
+				or n:find("Dirty")
+				or n:find("Attacker")
+				or n:find("Victim")
+				or n:find("Success")
+				or n:find("Momentum")
+				or n:find("Guardbreak")
+			then
+				-- skip
+			else
+				markLocomotionId(d.AnimationId)
+			end
+		end
+	end
+end
+
+local function harvestStyleLocomotion(root)
+	if not root then
+		return
+	end
+	local ok, list = pcall(function()
+		return root:GetDescendants()
+	end)
+	if not ok or type(list) ~= "table" then
+		return
+	end
+	for _, d in ipairs(list) do
+		if d:IsA("Animation") then
+			local n = d.Name
+			if n:find("Idle")
+				or n:find("Walk")
+				or n:find("Run")
+				or n:find("Block")
+				or n:find("Parry")
+				or n:find("Stun")
+				or n:find("Dodge")
+				or n:find("Dash")
+				or n:find("Fall")
+				or n:find("Jump")
+				or n:find("GetUp")
+				or n:find("Knock")
+				or n:find("Hurt")
+				or n:find("React")
+				or n:find("Blocking")
+			then
+				if not (n:find("EHit") or n:find("Guardbreak") or n:find("M1") or n:find("M2")) then
+					markLocomotionId(d.AnimationId)
+				end
+			end
+		end
+	end
+end
+
+function AttackDB.seedLocomotionFromGame()
+	local anims = game:GetService("ReplicatedStorage"):FindFirstChild("Animations")
+	if not anims then
+		return
+	end
+	harvestNonAttackAnims(anims:FindFirstChild("Movement"))
+	harvestNonAttackAnims(anims:FindFirstChild("Emotes"))
+	harvestNonAttackAnims(anims:FindFirstChild("Items"))
+	harvestStyleLocomotion(anims:FindFirstChild("BaseCombat"))
+	harvestStyleLocomotion(anims:FindFirstChild("Combat"))
+end
 
 -- Full attack seed (unique ids). hitDelay ≈ CombatConfig M1 hitbox timing.
 local SEED = {
@@ -131,18 +256,12 @@ local SEED = {
 	["128307941333158"] = { name = "GrappleVictim", kind = "M2", hitDelay = 0.40, window = 0.125 },
 }
 
-function AttackDB.extractId(animationId)
-	if type(animationId) == "number" then
-		return tostring(math.floor(animationId))
-	end
-	if type(animationId) ~= "string" then
-		return nil
-	end
-	return animationId:match("%d+")
-end
-
 function AttackDB.isLocomotionId(id)
 	id = AttackDB.extractId(id) or tostring(id or "")
+	-- Never treat known attack SEED ids as locomotion.
+	if SEED[id] then
+		return false
+	end
 	return LOCOMOTION_IDS[id] == true
 end
 
@@ -189,6 +308,8 @@ local function isAttackName(name)
 end
 
 function AttackDB.create()
+	pcall(AttackDB.seedLocomotionFromGame)
+
 	local byId = {}
 	for id, info in pairs(SEED) do
 		byId[id] = {
@@ -208,6 +329,8 @@ function AttackDB.create()
 	}
 
 	function db:rebuild()
+		pcall(AttackDB.seedLocomotionFromGame)
+
 		local function addAnim(style, anim)
 			if not anim or not anim:IsA("Animation") then
 				return

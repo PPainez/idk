@@ -300,15 +300,9 @@ return function(ctx)
         end
 
         local parent = nil
+        -- Prefer PlayerGui first: some executors throw Plugin capability errors when
+        -- parenting Frames into gethui()/CoreGui from this thread context.
         local candidates = {}
-        if type(gethui) == "function" then
-            table.insert(candidates, function()
-                return gethui()
-            end)
-        end
-        table.insert(candidates, function()
-            return ctx.library and ctx.library.base
-        end)
         table.insert(candidates, function()
             local lp = game:GetService("Players").LocalPlayer
             local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
@@ -323,35 +317,54 @@ return function(ctx)
                 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
                 gui.IgnoreGuiInset = true
                 gui.DisplayOrder = 999999
-                gui.Parent = pg
+                local ok = pcall(function()
+                    gui.Parent = pg
+                end)
+                if not ok then
+                    return nil
+                end
             end
             return gui
         end)
         table.insert(candidates, function()
+            return ctx.library and ctx.library.base
+        end)
+        if type(gethui) == "function" then
+            table.insert(candidates, function()
+                return gethui()
+            end)
+        end
+        table.insert(candidates, function()
             return game:GetService("CoreGui")
         end)
 
+        local root = nil
         for _, getter in ipairs(candidates) do
             local ok, result = pcall(getter)
             if ok and typeof(result) == "Instance" then
-                parent = result
-                break
+                local rootOk, candidate = pcall(function()
+                    local frame = Instance.new("Frame")
+                    frame.Name = "xanhub_notification_overlay"
+                    frame.Size = UDim2.fromScale(1, 1)
+                    frame.BackgroundTransparency = 1
+                    frame.BorderSizePixel = 0
+                    frame.Active = false
+                    frame.ZIndex = 7900
+                    frame.Parent = result
+                    return frame
+                end)
+                if rootOk and candidate and candidate.Parent then
+                    parent = result
+                    root = candidate
+                    break
+                elseif typeof(candidate) == "Instance" then
+                    pcall(function()
+                        candidate:Destroy()
+                    end)
+                end
             end
         end
-        assert(parent, "[xanhub notifications] no UI parent")
-
-        local rootOk, root = pcall(function()
-            return shared.create("Frame", {
-                Name = "xanhub_notification_overlay",
-                Size = UDim2.fromScale(1, 1),
-                BackgroundTransparency = 1,
-                BorderSizePixel = 0,
-                Active = false,
-                ZIndex = 7900,
-                Parent = parent,
-            })
-        end)
-        assert(rootOk and root, "[xanhub notifications] could not create overlay")
+        assert(root and parent, "[xanhub notifications] no UI parent")
         state.root = root
 
         state.stack = shared.create("Frame", {
