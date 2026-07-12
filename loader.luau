@@ -3,9 +3,9 @@
 
     Repository layout:
       /ui.luau
-      /main/loader.luau
-      /main/universal.luau
-      /main/games/<game-file>.luau
+      /loader.luau
+      /universal.luau
+      /games/<game-file>.luau
 
     Add featured games in FEATURED_PLACES or FEATURED_UNIVERSES below.
     Game scripts receive the runtime table as their first argument and can also
@@ -14,7 +14,7 @@
 
 local REPOSITORY_ROOT = "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main"
 local UI_URL = REPOSITORY_ROOT .. "/ui.luau"
-local MAIN_ROOT = REPOSITORY_ROOT .. "/main"
+local MAIN_ROOT = REPOSITORY_ROOT
 local UNIVERSAL_URL = MAIN_ROOT .. "/universal.luau"
 
 -- Place-specific scripts. This is the usual table to edit.
