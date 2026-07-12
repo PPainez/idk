@@ -42,10 +42,10 @@ return function(ctx)
 		flag = "Gakuran Reaction Offset",
 		min = -100,
 		max = 250,
-		value = 40,
+		value = 15,
 		float = 5,
 		suffix = " ms",
-		tip = "Positive = block later (safer). Negative = earlier.",
+		tip = "Fine-tune vs style contact. Positive = block a bit later. Contact uses CombatConfig hitbox delays per style/step.",
 	})
 	parry:AddSlider({
 		text = "Range Pre-filter",
@@ -996,60 +996,125 @@ return function(ctx)
 		end
 	end
 
-	local function styleHitDelay(attacker, dbEntry)
-		local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
+	-- Contact timing from CombatConfig.GetScaledStyleM1HitboxDelay (live-scraped).
+	-- Capoeira: 1st 0.362 · 2nd 0.442 · 3rd 0.362 · 4th 0.292 (offsets matter a lot).
+	local STYLE_M1_STEPS = {
+		-- [style] = { 1st, 2nd, 3rd, 4th } seconds to hitbox
+		default = { 0.332, 0.332, 0.332, 0.332 },
+		basic = { 0.352, 0.352, 0.352, 0.352 },
+		boxing = { 0.352, 0.352, 0.352, 0.392 },
+		capoeira = { 0.362, 0.442, 0.362, 0.292 },
+		hakari = { 0.452, 0.472, 0.452, 0.502 },
+		karate = { 0.290, 0.327, 0.402, 0.477 },
+		kure = { 0.332, 0.332, 0.332, 0.332 },
+		muaythai = { 0.312, 0.312, 0.312, 0.312 },
+		slugger = { 0.512, 0.462, 0.462, 0.382 },
+		striker = { 0.332, 0.332, 0.332, 0.332 },
+		wrestling = { 0.332, 0.332, 0.332, 0.332 },
+	}
+	local STYLE_M2 = {
+		default = 0.30,
+		basic = 0.525,
+		boxing = 0.43,
+		capoeira = 0.45,
+		hakari = 0.59,
+		karate = 0.4875,
+		kure = 0.30,
+		muaythai = 0.60,
+		slugger = 0.82,
+		striker = 0.30,
+		wrestling = 0.525,
+	}
+
+	local combatConfigCache = nil
+	local function getCombatConfig()
+		if combatConfigCache ~= nil then
+			return combatConfigCache
+		end
+		local ok, cfg = pcall(function()
+			return require(game:GetService("ReplicatedStorage").Shared.Config.CombatConfig)
+		end)
+		combatConfigCache = ok and cfg or false
+		return combatConfigCache
+	end
+
+	local function comboStepFromName(name)
+		name = tostring(name or "")
+		if name:find("1st", 1, true) then
+			return 1
+		end
+		if name:find("2nd", 1, true) then
+			return 2
+		end
+		if name:find("3rd", 1, true) then
+			return 3
+		end
+		if name:find("4th", 1, true) then
+			return 4
+		end
+		return nil
+	end
+
+	local function attackerStyleKey(attacker)
 		local character = getCharacter(attacker)
-		local style = nil
-		if character then
-			local pd = character:FindFirstChild("PlayerData")
-			if pd then
-				style = pd:GetAttribute("Style") or pd:GetAttribute("CombatStyle")
-			end
+		if not character then
+			return "default"
 		end
+		local pd = character:FindFirstChild("PlayerData")
+		local style = pd and (pd:GetAttribute("Style") or pd:GetAttribute("CombatStyle"))
 		if type(style) ~= "string" or style == "" then
-			return delay
+			return "default"
 		end
-		local key = string.lower(style)
-		-- CombatConfig style base hitbox delays (live scrape).
-		local styleM1 = {
-			basic = 0.32,
-			boxing = 0.32,
-			capoeira = 0.33,
-			hakari = 0.28,
-			karate = 0.24,
-			kure = 0.32,
-			muaythai = 0.30,
-			slugger = 0.20,
-			striker = 0.32,
-			wrestling = 0.32,
-			default = 0.32,
-		}
-		local styleM2 = {
-			basic = 0.525,
-			boxing = 0.43,
-			capoeira = 0.45,
-			hakari = 0.59,
-			karate = 0.4875,
-			kure = 0.30,
-			muaythai = 0.60,
-			slugger = 0.82,
-			striker = 0.30,
-			wrestling = 0.525,
-			default = 0.30,
-		}
+		return string.lower(style)
+	end
+
+	local function styleHitDelay(attacker, dbEntry, track)
+		local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
+		local key = attackerStyleKey(attacker)
 		local kind = dbEntry and dbEntry.kind
 		local name = tostring(dbEntry and dbEntry.name or "")
+		local step = comboStepFromName(name) or attackerCombo(attacker)
+		if step < 1 or step > 4 then
+			step = 1
+		end
+
+		local speed = 1
+		if track then
+			pcall(function()
+				speed = tonumber(track.Speed) or 1
+			end)
+		end
+		if speed <= 0.05 then
+			speed = 1
+		end
+
 		if kind == "M2" or name:find("M2", 1, true) or name:find("Crit", 1, true) then
-			return styleM2[key] or delay
+			local m2 = STYLE_M2[key] or STYLE_M2.default
+			local cfg = getCombatConfig()
+			if cfg and type(cfg.GetStyleM2HitboxDelay) == "function" then
+				local ok, d = pcall(cfg.GetStyleM2HitboxDelay, key, name:find("Momentum", 1, true) ~= nil)
+				if ok and type(d) == "number" then
+					m2 = d
+				end
+			end
+			return math.max(0.08, m2 / speed)
 		end
+
 		if kind == "EHit" or name:find("EHit", 1, true) then
-			return delay
+			return math.max(0.08, delay / speed)
 		end
-		local base = styleM1[key] or delay
-		if name:find("4th", 1, true) then
-			return base + 0.03
+
+		-- Prefer live CombatConfig scaled delay (base + per-step offset) / attackSpeed
+		local cfg = getCombatConfig()
+		if cfg and type(cfg.GetScaledStyleM1HitboxDelay) == "function" then
+			local ok, d = pcall(cfg.GetScaledStyleM1HitboxDelay, key, step, speed)
+			if ok and type(d) == "number" and d > 0.05 then
+				return d
+			end
 		end
-		return base
+
+		local steps = STYLE_M1_STEPS[key] or STYLE_M1_STEPS.default
+		return math.max(0.08, (steps[step] or delay) / speed)
 	end
 
 	local function trackTime(track)
@@ -1128,17 +1193,18 @@ return function(ctx)
 		combo = math.clamp(tonumber(combo) or 1, 1, 4)
 		local names = { "1stM1", "2ndM1", "3rdM1", "4thM1" }
 		local want = names[combo]
-		local delays = { 0.30, 0.28, 0.28, 0.35 }
+		local styleKey = attackerStyleKey(attacker)
+		local steps = STYLE_M1_STEPS[styleKey] or STYLE_M1_STEPS.default
+		local delay = steps[combo] or 0.32
 		local db = st.db
 		if db and type(db.byId) == "table" then
-			-- Prefer any DB entry with matching punch name (style-agnostic ID match later via tracks).
 			for _, e in pairs(db.byId) do
 				if e and e.name == want and e.kind == "M1" then
 					return {
 						id = e.id,
 						name = e.name,
 						kind = "M1",
-						hitDelay = e.hitDelay or delays[combo],
+						hitDelay = delay,
 						window = e.window or 0.125,
 						_from = "combo-attr",
 					}
@@ -1149,7 +1215,7 @@ return function(ctx)
 			id = "combo-" .. tostring(combo),
 			name = want,
 			kind = "M1",
-			hitDelay = delays[combo],
+			hitDelay = delay,
 			window = 0.125,
 			_from = "combo-attr",
 		}
@@ -1185,9 +1251,14 @@ return function(ctx)
 			startVisualizer(attacker, track, dbEntry)
 		end
 
-		-- Style-aware hitbox delay (slugger M1 ~0.2s, hakari ~0.45s, slugger M2 ~0.82s).
-		local hitDelay = styleHitDelay(attacker, dbEntry)
+		-- Contact = CombatConfig scaled hitbox delay for this style + combo step.
+		local hitDelay = styleHitDelay(attacker, dbEntry, track)
 		local window = tonumber(dbEntry.window) or 0.125
+		-- Hitbox duration ~0.15s (config); use that as perfect-block window default.
+		local cfg = getCombatConfig()
+		if cfg and cfg.M1 and type(cfg.M1.HitboxDuration) == "number" then
+			window = math.clamp(cfg.M1.HitboxDuration, 0.08, 0.2)
+		end
 		local range = numFlag("Gakuran Range Prefilter", 14)
 		local m2Attack = isM2Entry(dbEntry)
 		local hold = attackerHoldingM1(attacker) or opts.fromCombo == true
@@ -1206,32 +1277,30 @@ return function(ctx)
 			debugLog("profile override", profile.name or profile.animationName)
 		end
 
-		-- Prefer remaining time from the live track when available.
-		-- Hold-M1 remotes often arrive LATE (TimePosition already 0.4–0.6s) — don't trust
-		-- large elapsed on hold; combo pulses use elapsed≈0.
+		-- Elapsed from track. Hold remotes often arrive late — for hold/combo:
+		-- use min(elapsed, hitDelay*0.55) so we still aim near contact, not "always now".
 		local elapsed = trackTime(track)
 		if opts.fromCombo then
-			-- Attribute edge: assume slight network lag already, not full track age.
-			elapsed = opts.assumedElapsed or 0.05
-		elseif hold and elapsed > hitDelay * 0.45 then
-			-- Late-replicated mid-swing: block immediately rather than skip.
-			elapsed = hitDelay
+			elapsed = opts.assumedElapsed or 0.03
+		elseif hold and elapsed > hitDelay * 0.55 then
+			-- Late replicate: aim for remaining hit window center, not full restart.
+			elapsed = hitDelay * 0.55
 		end
 
-		local reaction = numFlag("Gakuran Reaction Offset", 40) / 1000
+		-- Reaction: positive = wait longer before block (tip-aligned). Default 15ms fine tune.
+		local reaction = numFlag("Gakuran Reaction Offset", 15) / 1000
 		local pingComp, pingMs = pingCompensationSeconds()
 
-		-- M2 dodge fires earlier (escape before hitbox); parry aims for perfect window.
+		-- Aim for start of perfect window (hit - window*0.4), not after contact.
 		local waitTime
 		if m2Attack and flag("Gakuran Dodge M2", false) then
 			local early = numFlag("Gakuran M2 Dodge Early", 90) / 1000
 			waitTime = math.max(0, hitDelay - early - pingComp - elapsed)
 		else
-			local target = hitDelay - reaction - (window * 0.35) - pingComp
-			waitTime = target - elapsed
+			local contact = hitDelay - (window * 0.4) - pingComp + reaction
+			waitTime = contact - elapsed
 			if waitTime < 0 then
-				-- Hold strings: always try a same-frame block if we still see the swing.
-				if hold or elapsed <= hitDelay + 0.22 then
+				if hold or elapsed <= hitDelay + window then
 					waitTime = 0
 				else
 					st.pending[dedupe] = nil
@@ -1243,7 +1312,7 @@ return function(ctx)
 
 		if flag("Gakuran Combat Debug Logs", false) then
 			combatToast("debug", "Attack Seen", string.format(
-				"%s · %s from %s%s%s\nbase %.0fms · wait %.0fms · ping %.0fms%s%s",
+				"%s · %s · %s%s%s\ncontact %.0fms · wait %.0fms · el %.0fms · ping %.0fms%s",
 				tostring(dbEntry.name or "?"),
 				tostring(dbEntry.kind or "?"),
 				tostring(attacker.Name),
@@ -1251,9 +1320,9 @@ return function(ctx)
 				opts.fromCombo and " · COMBO" or "",
 				hitDelay * 1000,
 				waitTime * 1000,
+				elapsed * 1000,
 				pingMs,
-				pingComp > 0 and string.format(" (−%.0fms)", pingComp * 1000) or "",
-				m2Attack and flag("Gakuran Dodge M2", false) and " · m2-dodge" or ""
+				pingComp > 0 and string.format(" (−%.0fms)", pingComp * 1000) or ""
 			), "combat-seen-" .. tostring(animId) .. "-" .. tostring(attackerCombo(attacker)))
 		end
 
