@@ -54,6 +54,13 @@ local function getPlayerLabel(player)
 	return trimmed
 end
 
+local function safeClamp(value, minValue, maxValue)
+	if minValue > maxValue then
+		minValue, maxValue = maxValue, minValue
+	end
+	return math.clamp(value, minValue, maxValue)
+end
+
 return function(ctx)
 	local espSection = ctx.columns.visualsLeft:AddSection("Player ESP")
 	espSection:AddToggle({text = "Enabled", flag = "Universal ESP", state = false})
@@ -61,7 +68,7 @@ return function(ctx)
 	espSection:AddList({
 		text = "Box Style",
 		flag = "Universal ESP Box Style",
-		values = {"Full", "Corners"},
+		values = {"Full", "Corners", "Double"},
 		value = "Corners",
 	})
 	espSection:AddToggle({text = "Filled Box", flag = "Universal ESP Box Fill", state = false})
@@ -75,13 +82,44 @@ return function(ctx)
 		suffix = "%",
 	})
 	espSection:AddToggle({text = "Pulse Glow", flag = "Universal ESP Pulse", state = true})
+	espSection:AddToggle({text = "Chroma Shift", flag = "Universal ESP Chroma", state = false})
+	espSection:AddSlider({
+		text = "Glow Strength",
+		flag = "Universal ESP Glow Strength",
+		min = 0,
+		max = 100,
+		value = 55,
+		float = 5,
+		suffix = "%",
+	})
+	espSection:AddSlider({
+		text = "Corner Length",
+		flag = "Universal ESP Corner Length",
+		min = 10,
+		max = 45,
+		value = 24,
+		float = 1,
+		suffix = "%",
+	})
 	espSection:AddToggle({text = "Skeleton ESP", flag = "Universal ESP Skeleton", state = false})
 	espSection:AddToggle({text = "Head Dot", flag = "Universal ESP Head Dot", state = false})
 	espSection:AddToggle({text = "Nametag", flag = "Universal ESP Nametag", state = true})
 	espSection:AddToggle({text = "Show Username", flag = "Universal ESP Show Username", state = false})
 	espSection:AddToggle({text = "Distance Tag", flag = "Universal ESP Distance", state = true})
 	espSection:AddToggle({text = "Health Bar", flag = "Universal ESP Health", state = true})
+	espSection:AddList({
+		text = "Health Bar Side",
+		flag = "Universal ESP Health Side",
+		values = {"Left", "Right"},
+		value = "Left",
+	})
 	espSection:AddToggle({text = "Tracer Line", flag = "Universal ESP Tracer", state = false})
+	espSection:AddList({
+		text = "Tracer From",
+		flag = "Universal ESP Tracer From",
+		values = {"Bottom", "Center", "Top"},
+		value = "Bottom",
+	})
 	espSection:AddToggle({text = "Highlights", flag = "Universal ESP Highlights", state = false})
 	espSection:AddToggle({text = "Team Check", flag = "Universal ESP Team Check", state = false})
 	espSection:AddSlider({
@@ -138,8 +176,9 @@ return function(ctx)
 	})
 
 	local styleSection = ctx.columns.visualsRight:AddSection("ESP Style")
-	styleSection:AddLabel("Corner boxes + pulse glow are the xanhub look")
-	styleSection:AddLabel("Health bar sits on the left edge of the box")
+	styleSection:AddLabel("Corners + pulse glow = xanhub signature look")
+	styleSection:AddLabel("Chroma Shift cycles hue per player")
+	styleSection:AddLabel("Double style stacks outline + corner brackets")
 
 	local previewSection = ctx.columns.visualsRight:AddSection("ESP Preview")
 	previewSection:AddLabel("Live Roblox character preview")
@@ -306,8 +345,27 @@ return function(ctx)
 			return drawings
 		end
 
-		local function drawCornerBox(drawings, topLeft, width, height, color, thickness, transparency, visible)
-			if not visible then
+		local function resolveDisplayColor(baseColor, player, isTarget, targetColor)
+			if isTarget then
+				return targetColor
+			end
+			if flag("Universal ESP Chroma", false) then
+				local hue = (os.clock() * 0.14 + (player.UserId % 997) * 0.0013) % 1
+				return Color3.fromHSV(hue, 0.82, 1)
+			end
+			return baseColor
+		end
+
+		local function getBoxStyle()
+			local style = ctx.library.flags["Universal ESP Box Style"]
+			if style == "Full" or style == "Corners" or style == "Double" then
+				return style
+			end
+			return "Corners"
+		end
+
+		local function drawCornerBox(drawings, topLeft, width, height, color, thickness, transparency, visible, cornerRatio)
+			if not visible or width < 2 or height < 2 then
 				for _, line in ipairs(drawings.corners) do
 					hideDrawing(line)
 				end
@@ -317,7 +375,8 @@ return function(ctx)
 
 			hideDrawing(drawings.box)
 
-			local corner = math.clamp(math.min(width, height) * 0.24, 7, 18)
+			local ratio = (cornerRatio or 24) / 100
+			local corner = safeClamp(math.min(width, height) * ratio, 4, math.min(width, height) * 0.48)
 			local x1, y1 = topLeft.X, topLeft.Y
 			local x2, y2 = topLeft.X + width, topLeft.Y + height
 
@@ -457,7 +516,7 @@ return function(ctx)
 
 		local function updateScreenOverlay(entry, player, bounds, visible, displayColor, opacity, fade, isTarget, targetColor, distance, humanoid)
 			local screen = entry.screen
-			if not screen or not screen.root then
+			if not screen or not screen.root or not humanoid then
 				return
 			end
 
@@ -471,14 +530,21 @@ return function(ctx)
 				return
 			end
 
-			local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
+			local maxHealth = math.max(1, humanoid.MaxHealth)
+			local ratio = safeClamp(humanoid.Health / maxHealth, 0, 1)
 			entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
 
 			local topLeft = bounds.topLeft
 			local bottomRight = bounds.bottomRight
-			local width = bottomRight.X - topLeft.X
-			local height = bottomRight.Y - topLeft.Y
+			local width = math.max(0, bottomRight.X - topLeft.X)
+			local height = math.max(0, bottomRight.Y - topLeft.Y)
 			local anchor = bounds.topCenter
+
+			if width < 2 or height < 2 then
+				screen.nametag.Visible = false
+				screen.sideHealthBg.Visible = false
+				return
+			end
 
 			screen.nametag.Visible = showNametag
 			screen.sideHealthBg.Visible = showSideHealth
@@ -490,23 +556,24 @@ return function(ctx)
 				screen.nametag.Position = UDim2.fromOffset(anchor.X, anchor.Y - 2)
 				screen.nametag.Size = UDim2.fromOffset(200, 12 + (lineCount + 1) * nametagSize)
 				screen.nametag.TextSize = nametagSize
-				screen.nametag.TextTransparency = 1 - opacity
+				screen.nametag.TextTransparency = safeClamp(1 - opacity, 0, 1)
 				screen.nametag.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
 				screen.nametag.Text = tagText
 			end
 
 			if showSideHealth then
-				local barHeight = math.clamp(height * 0.86, 28, height)
+				local barHeight = safeClamp(height * 0.86, 4, height)
 				local barWidth = 3
-				local barX = topLeft.X - 6
+				local healthSide = ctx.library.flags["Universal ESP Health Side"] == "Right" and "Right" or "Left"
+				local barX = healthSide == "Right" and (bottomRight.X + 6) or (topLeft.X - 6)
 				local barY = topLeft.Y + (height - barHeight) * 0.5
 
 				screen.sideHealthBg.Position = UDim2.fromOffset(barX, barY)
 				screen.sideHealthBg.Size = UDim2.fromOffset(barWidth, barHeight)
-				screen.sideHealthBg.BackgroundTransparency = 0.08 + fade * 0.66
-				screen.sideHealthFill.Size = UDim2.new(1, 0, entry.displayedHealth, 0)
-				screen.sideHealthFill.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
-				screen.sideHealthFill.BackgroundTransparency = 1 - opacity
+				screen.sideHealthBg.BackgroundTransparency = safeClamp(0.08 + fade * 0.66, 0, 1)
+				screen.sideHealthFill.Size = UDim2.new(1, 0, safeClamp(entry.displayedHealth, 0, 1), 0)
+				screen.sideHealthFill.BackgroundColor3 = Color3.fromHSV(safeClamp(entry.displayedHealth, 0, 1) * 0.33, 0.78, 1)
+				screen.sideHealthFill.BackgroundTransparency = safeClamp(1 - opacity, 0, 1)
 			end
 		end
 
@@ -515,45 +582,89 @@ return function(ctx)
 			local boxThickness = numberFlag("Universal ESP Box Thickness", 1.5)
 			local lineThickness = numberFlag("Universal ESP Line Thickness", 1.5)
 			local fillOpacity = numberFlag("Universal ESP Fill Opacity", 18) / 100
+			local cornerLength = numberFlag("Universal ESP Corner Length", 24)
+			local glowStrength = numberFlag("Universal ESP Glow Strength", 55) / 100
 			local showBox = flag("Universal ESP Box", true)
 			local showFill = flag("Universal ESP Box Fill", false)
 			local showSkeleton = flag("Universal ESP Skeleton", false)
 			local showTracer = flag("Universal ESP Tracer", false)
 			local showHeadDot = flag("Universal ESP Head Dot", false)
 			local showPulse = flag("Universal ESP Pulse", true)
-			local cornerStyle = ctx.library.flags["Universal ESP Box Style"] == "Corners"
+			local boxStyle = getBoxStyle()
+			local cornerStyle = boxStyle == "Corners" or boxStyle == "Double"
 
 			local topLeft = bounds.topLeft
-			local width = bounds.bottomRight.X - topLeft.X
-			local height = bounds.bottomRight.Y - topLeft.Y
-			local pulse = showPulse and (0.5 + math.abs(math.sin(os.clock() * (isTarget and 5 or 3))) * 0.5) or 1
-			local boxAlpha = math.clamp((0.08 + fade * 0.45) / pulse, 0.05, 0.92)
+			local width = math.max(0, bounds.bottomRight.X - topLeft.X)
+			local height = math.max(0, bounds.bottomRight.Y - topLeft.Y)
 
-			if showPulse and drawings.glow and showBox then
+			if width < 2 or height < 2 then
+				hideDrawing(drawings.glow)
+				hideDrawing(drawings.box)
+				hideDrawing(drawings.boxFill)
+				hideDrawing(drawings.tracer)
+				hideDrawing(drawings.headDot)
+				for _, line in ipairs(drawings.corners) do
+					hideDrawing(line)
+				end
+				for _, line in ipairs(drawings.skeleton) do
+					hideDrawing(line)
+				end
+				return
+			end
+
+			local pulse = showPulse and (0.5 + math.abs(math.sin(os.clock() * (isTarget and 5 or 3))) * 0.5) or 1
+			pulse = math.max(pulse, 0.01)
+			local boxAlpha = safeClamp((0.08 + fade * 0.45) / pulse, 0.05, 0.92)
+
+			if showPulse and drawings.glow and showBox and glowStrength > 0 then
 				drawings.glow.Visible = true
 				drawings.glow.Position = topLeft - Vector2.new(2, 2)
 				drawings.glow.Size = Vector2.new(width + 4, height + 4)
 				drawings.glow.Color = displayColor
 				drawings.glow.Filled = true
 				drawings.glow.Thickness = 0
-				drawings.glow.Transparency = math.clamp(0.9 - pulse * 0.18, 0.72, 0.94)
+				drawings.glow.Transparency = safeClamp(0.96 - glowStrength * pulse * 0.24, 0.72, 0.97)
 			else
 				hideDrawing(drawings.glow)
 			end
 
 			if cornerStyle then
-				drawCornerBox(drawings, topLeft, width, height, displayColor, boxThickness * pulse, boxAlpha, showBox)
+				drawCornerBox(
+					drawings,
+					topLeft,
+					width,
+					height,
+					displayColor,
+					boxThickness * pulse,
+					boxAlpha,
+					showBox,
+					cornerLength
+				)
+			end
+
+			if boxStyle == "Full" or boxStyle == "Double" then
+				if drawings.box then
+					drawings.box.Visible = showBox
+					drawings.box.Position = topLeft
+					drawings.box.Size = Vector2.new(width, height)
+					drawings.box.Color = displayColor
+					drawings.box.Thickness = boxStyle == "Double" and boxThickness * 0.65 or boxThickness * pulse
+					drawings.box.Filled = false
+					drawings.box.Transparency = boxStyle == "Double" and safeClamp(boxAlpha + 0.18, 0.1, 0.95) or boxAlpha
+				end
 			elseif drawings.box then
+				hideDrawing(drawings.box)
+				if not cornerStyle then
+					for _, line in ipairs(drawings.corners) do
+						hideDrawing(line)
+					end
+				end
+			end
+
+			if not cornerStyle then
 				for _, line in ipairs(drawings.corners) do
 					hideDrawing(line)
 				end
-				drawings.box.Visible = showBox
-				drawings.box.Position = topLeft
-				drawings.box.Size = Vector2.new(width, height)
-				drawings.box.Color = displayColor
-				drawings.box.Thickness = boxThickness * pulse
-				drawings.box.Filled = false
-				drawings.box.Transparency = boxAlpha
 			end
 
 			if drawings.boxFill then
@@ -563,17 +674,27 @@ return function(ctx)
 				drawings.boxFill.Color = displayColor
 				drawings.boxFill.Filled = true
 				drawings.boxFill.Thickness = 0
-				drawings.boxFill.Transparency = math.clamp(1 - fillOpacity + fade * 0.2, 0.4, 0.96)
+				drawings.boxFill.Transparency = safeClamp(1 - fillOpacity + fade * 0.2, 0.4, 0.96)
 			end
 
 			if drawings.tracer then
 				local viewport = camera.ViewportSize
+				local tracerFrom = ctx.library.flags["Universal ESP Tracer From"] or "Bottom"
+				local origin
+				if tracerFrom == "Center" then
+					origin = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+				elseif tracerFrom == "Top" then
+					origin = Vector2.new(viewport.X * 0.5, 0)
+				else
+					origin = Vector2.new(viewport.X * 0.5, viewport.Y)
+				end
+
 				drawings.tracer.Visible = showTracer
-				drawings.tracer.From = Vector2.new(viewport.X * 0.5, viewport.Y)
+				drawings.tracer.From = origin
 				drawings.tracer.To = bounds.bottomCenter
 				drawings.tracer.Color = displayColor
 				drawings.tracer.Thickness = lineThickness
-				drawings.tracer.Transparency = math.clamp(0.2 + fade * 0.55, 0.2, 0.9)
+				drawings.tracer.Transparency = safeClamp(0.2 + fade * 0.55, 0.2, 0.9)
 			end
 
 			if drawings.headDot then
@@ -583,10 +704,10 @@ return function(ctx)
 					if onScreen then
 						drawings.headDot.Visible = true
 						drawings.headDot.Position = Vector2.new(point.X, point.Y)
-						drawings.headDot.Radius = math.clamp(3 + pulse, 3, 5)
+						drawings.headDot.Radius = safeClamp(3 + pulse, 3, 5)
 						drawings.headDot.Color = displayColor
 						drawings.headDot.Filled = true
-						drawings.headDot.Transparency = 1 - opacity
+						drawings.headDot.Transparency = safeClamp(1 - opacity, 0, 1)
 					else
 						hideDrawing(drawings.headDot)
 					end
@@ -612,7 +733,7 @@ return function(ctx)
 							line.To = Vector2.new(bp.X, bp.Y)
 							line.Color = skeletonColor
 							line.Thickness = lineThickness
-							line.Transparency = math.clamp(0.12 + fade * 0.5, 0.12, 0.9)
+							line.Transparency = safeClamp(0.12 + fade * 0.5, 0.12, 0.9)
 						else
 							hideDrawing(line)
 						end
@@ -656,7 +777,7 @@ return function(ctx)
 			local enabled = flag("Universal ESP", false)
 			local localRoot = ctx.getRoot()
 			local maxDistance = math.max(50, numberFlag("Universal ESP Max Distance", 650))
-			local fadeStart = math.clamp(numberFlag("Universal ESP Fade Start", 250), 0, maxDistance - 1)
+			local fadeStart = safeClamp(numberFlag("Universal ESP Fade Start", 250), 0, math.max(0, maxDistance - 1))
 			local color = colorFlag("Universal ESP Color", Color3.fromRGB(0, 170, 255))
 			local skeletonColor = colorFlag("Universal ESP Skeleton Color", Color3.fromRGB(0, 210, 255))
 
@@ -678,8 +799,7 @@ return function(ctx)
 
 					if entry then
 						local distance = localRoot and (localRoot.Position - root.Position).Magnitude or math.huge
-						local targetingEnabled = flag("Universal Aim Preview", false)
-						local isTarget = targetingEnabled and ctx.state.aimTarget == player
+						local isTarget = ctx.state.aimTarget == player
 						local targetSync = ctx.library.flags["Universal Targeting Sync ESP"] ~= false
 
 						local espSameTeam = flag("Universal ESP Team Check", false)
@@ -707,8 +827,8 @@ return function(ctx)
 							hideEntryDrawings(entry)
 						else
 							local displayMaxDistance = isTarget and not enabled and targetMaxDistance or maxDistance
-							local displayFadeStart = math.min(fadeStart, displayMaxDistance - 1)
-							local fade = math.clamp(
+							local displayFadeStart = math.min(fadeStart, math.max(0, displayMaxDistance - 1))
+							local fade = safeClamp(
 								(distance - displayFadeStart) / math.max(1, displayMaxDistance - displayFadeStart),
 								0,
 								1
@@ -717,7 +837,7 @@ return function(ctx)
 
 							local configuredTargetColor = colorFlag("Universal Aim Color", Color3.fromRGB(255, 82, 96))
 							local targetColor = targetSync and color or configuredTargetColor
-							local displayColor = isTarget and targetColor or color
+							local displayColor = resolveDisplayColor(color, player, isTarget, targetColor)
 
 							entry.highlight.Enabled = visibleForESP and flag("Universal ESP Highlights", false)
 							entry.highlight.FillColor = displayColor
@@ -975,7 +1095,7 @@ return function(ctx)
 		local function layoutPreviewCorner(corner, boxPos, boxSize, cornerIndex, color, thickness)
 			local x, y = boxPos.X.Offset, boxPos.Y.Offset
 			local w, h = boxSize.X.Offset, boxSize.Y.Offset
-			local len = math.clamp(math.min(w, h) * 0.22, 10, 18)
+			local len = safeClamp(math.min(w, h) * (numberFlag("Universal ESP Corner Length", 24) / 100), 6, 18)
 			local segments = {
 				{x, y, x + len, y, 0},
 				{x, y, x, y + len, 90},
@@ -1013,32 +1133,47 @@ return function(ctx)
 			local showHealth = flag("Universal ESP Health", true)
 			local showHeadDot = flag("Universal ESP Head Dot", false)
 			local showPulse = flag("Universal ESP Pulse", true)
-			local cornerStyle = ctx.library.flags["Universal ESP Box Style"] == "Corners"
+			local boxStyle = getBoxStyle()
+			local cornerStyle = boxStyle == "Corners" or boxStyle == "Double"
 			local fillOpacity = numberFlag("Universal ESP Fill Opacity", 18) / 100
+			local glowStrength = numberFlag("Universal ESP Glow Strength", 55) / 100
+			local chroma = flag("Universal ESP Chroma", false)
 
-			preview.box.Visible = showBox and not cornerStyle
+			local previewColor = color
+			if chroma then
+				previewColor = Color3.fromHSV((os.clock() * 0.14) % 1, 0.82, 1)
+			end
+
+			preview.box.Visible = showBox and boxStyle == "Full"
 			preview.boxFill.Visible = showBox and showFill
 			preview.nametag.Visible = showNametag
 			preview.healthBg.Visible = showHealth
 			preview.healthFill.Visible = showHealth
-			preview.glow.Visible = showBox and showPulse
+			preview.glow.Visible = showBox and showPulse and glowStrength > 0
 			preview.headDot.Visible = showHeadDot
 
 			local boxStroke = preview.box:FindFirstChildOfClass("UIStroke")
 			if boxStroke then
-				boxStroke.Color = color
+				boxStroke.Color = previewColor
 			end
 
-			preview.boxFill.BackgroundColor3 = color
-			preview.boxFill.BackgroundTransparency = 1 - fillOpacity
-			preview.glow.BackgroundColor3 = color
-			preview.glow.BackgroundTransparency = 0.88 - preview.pulse * 0.12
-			preview.headDot.BackgroundColor3 = color
+			preview.boxFill.BackgroundColor3 = previewColor
+			preview.boxFill.BackgroundTransparency = safeClamp(1 - fillOpacity, 0, 1)
+			preview.glow.BackgroundColor3 = previewColor
+			preview.glow.BackgroundTransparency = safeClamp(0.96 - glowStrength * preview.pulse * 0.24, 0.72, 0.97)
+			preview.headDot.BackgroundColor3 = previewColor
 
 			for index, corner in ipairs(preview.corners) do
 				corner.Visible = showBox and cornerStyle
 				if corner.Visible then
-					layoutPreviewCorner(corner, preview.box.Position, preview.box.Size, index, color, 2)
+					layoutPreviewCorner(corner, preview.box.Position, preview.box.Size, index, previewColor, 2)
+				end
+			end
+
+			if showBox and boxStyle == "Double" then
+				preview.box.Visible = true
+				if boxStroke then
+					boxStroke.Transparency = 0.45
 				end
 			end
 
