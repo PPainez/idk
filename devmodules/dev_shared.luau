@@ -134,6 +134,15 @@ return function(ctx)
             return dev.overlayGui
         end
 
+        for _, window in pairs(dev.windows) do
+            if type(window) == "table" and type(window.Destroy) == "function" then
+                pcall(function()
+                    window:Destroy()
+                end)
+            end
+        end
+        table.clear(dev.windows)
+
         local anchorParent
         if ctx.library and ctx.library.base then
             anchorParent = ctx.library.base.Parent or shared.getGuiParent()
@@ -145,7 +154,7 @@ return function(ctx)
         overlay.Name = "xanhub_dev_overlay"
         overlay.ResetOnSpawn = false
         overlay.IgnoreGuiInset = true
-        overlay.ZIndexBehavior = Enum.ZIndexBehavior.Global
+        overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         overlay.DisplayOrder = 1000001
         overlay.Enabled = true
         overlay.Parent = anchorParent
@@ -154,6 +163,7 @@ return function(ctx)
         shared.addCleanup(function()
             shared.safeDestroy(overlay)
             dev.overlayGui = nil
+            table.clear(dev.windows)
         end)
         return overlay
     end
@@ -393,7 +403,8 @@ return function(ctx)
             BorderSizePixel = 0,
             Visible = false,
             Active = true,
-            ZIndex = 20,
+            ClipsDescendants = false,
+            ZIndex = 1,
             Parent = parent,
         })
         shared.round(root, 10)
@@ -407,7 +418,7 @@ return function(ctx)
             BackgroundColor3 = shared.theme.panel,
             BorderSizePixel = 0,
             Active = true,
-            ZIndex = 901,
+            ZIndex = 2,
             Parent = root,
         })
         local topCorner = shared.round(top, 10)
@@ -418,7 +429,7 @@ return function(ctx)
             Size = UDim2.new(1, 0, 0, 2),
             BackgroundColor3 = accent(),
             BorderSizePixel = 0,
-            ZIndex = 902,
+            ZIndex = 3,
             Parent = top,
         })
 
@@ -431,7 +442,7 @@ return function(ctx)
             TextSize = 14,
             Font = Enum.Font.Code,
             TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 903,
+            ZIndex = 4,
             Parent = top,
         })
 
@@ -443,7 +454,7 @@ return function(ctx)
             TextColor3 = shared.theme.muted,
             TextSize = 15,
             Font = Enum.Font.Code,
-            ZIndex = 904,
+            ZIndex = 4,
             Parent = top,
         })
 
@@ -455,7 +466,7 @@ return function(ctx)
             TextColor3 = shared.theme.danger,
             TextSize = 14,
             Font = Enum.Font.Code,
-            ZIndex = 904,
+            ZIndex = 4,
             Parent = top,
         })
 
@@ -463,7 +474,8 @@ return function(ctx)
             Position = UDim2.fromOffset(0, 38),
             Size = UDim2.new(1, 0, 1, -38),
             BackgroundTransparency = 1,
-            ZIndex = 901,
+            ClipsDescendants = false,
+            ZIndex = 2,
             Parent = root,
         })
 
