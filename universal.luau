@@ -9,7 +9,7 @@ local runtime = ...
 local env = (type(getgenv) == "function" and getgenv()) or _G
 
 if type(runtime) ~= "table" then
-	runtime = env.XANHUB_RUNTIME
+    runtime = env.XANHUB_RUNTIME
 end
 
 local REPOSITORY_ROOT = (type(runtime) == "table" and runtime.repositoryRoot)
@@ -48,9 +48,17 @@ local moduleLoader = ModuleLoader.new(Http, function(path)
 	return Constants.repositoryUrls(path)
 end)
 
+if type(runtime) == "table" and runtime.forceFreshModules == true then
+	moduleLoader.clear()
+end
+
 local UI_URL = (type(runtime) == "table" and runtime.uiUrl) or Constants.uiUrl()
 
 local function acquireLibrary()
+	if type(runtime) == "table" and runtime.reloadedFromUpdate == true then
+		runtime.library = nil
+	end
+
 	if type(runtime) == "table"
 		and type(runtime.library) == "table"
 		and not runtime.library.unloaded then
@@ -61,19 +69,19 @@ local function acquireLibrary()
 	assert(source, "[xanhub universal] UI request failed: " .. tostring(fetchError))
 
 	local chunk, compileError = Http.compileSource(source)
-	assert(chunk, "[xanhub universal] UI compile failed: " .. tostring(compileError))
+    assert(chunk, "[xanhub universal] UI compile failed: " .. tostring(compileError))
 
-	local loaded = chunk()
-	assert(type(loaded) == "table", "[xanhub universal] UI library returned an invalid value")
+    local loaded = chunk()
+    assert(type(loaded) == "table", "[xanhub universal] UI library returned an invalid value")
 
-	runtime = type(runtime) == "table" and runtime or {}
-	runtime.library = loaded
-	runtime.uiUrl = UI_URL
+    runtime = type(runtime) == "table" and runtime or {}
+    runtime.library = loaded
+    runtime.uiUrl = UI_URL
 	runtime.repositoryRoot = REPOSITORY_ROOT
-	runtime.placeId = game.PlaceId
-	runtime.universeId = game.GameId
-	env.XANHUB_RUNTIME = runtime
-	return loaded
+    runtime.placeId = game.PlaceId
+    runtime.universeId = game.GameId
+    env.XANHUB_RUNTIME = runtime
+    return loaded
 end
 
 local library = acquireLibrary()
@@ -94,13 +102,13 @@ local services = {
 }
 
 local state = {
-	unloading = false,
-	reloading = false,
-	connections = {},
-	original = {},
-	esp = {},
-	overlays = {},
-	fly = {},
+    unloading = false,
+    reloading = false,
+    connections = {},
+    original = {},
+    esp = {},
+    overlays = {},
+    fly = {},
 	noclipOriginal = setmetatable({}, { __mode = "k" }),
 	movementOriginal = setmetatable({}, { __mode = "k" }),
 	effectOriginal = setmetatable({}, { __mode = "k" }),
@@ -124,12 +132,14 @@ ctx.shared = {
 	Http = Http,
 	Constants = Constants,
 }
+ctx.moduleLoader = moduleLoader
 
 local uiResult = moduleLoader.load("universal/modules/ui.luau")(ctx)
 ctx.columns = uiResult.columns
 ctx.tabs = uiResult.tabs
 
 local updateController = moduleLoader.load("universal/modules/updates.luau")(ctx)
+local devtoolsController = moduleLoader.load("universal/modules/devtools.luau")(ctx)
 
 local featureSetups = {}
 for _, modulePath in ipairs({
@@ -151,7 +161,7 @@ local initialized, initError = library:Init()
 assert(initialized, "[xanhub universal] initialization failed: " .. tostring(initError))
 
 task.defer(function()
-	updateController.check(false)
+    updateController.check(false)
 end)
 
 state.original.cameraFov = services.Workspace.CurrentCamera
@@ -162,37 +172,40 @@ ctx.createOverlayRoot()
 for _, setup in ipairs(featureSetups) do
 	setup()
 end
+if devtoolsController and type(devtoolsController.setup) == "function" then
+	devtoolsController.setup()
+end
 
 library:AddCleanup(function()
-	state.unloading = true
-	updateController.cancel()
+    state.unloading = true
+    updateController.cancel()
 
-	if type(runtime) == "table" then
-		runtime.unloading = true
-	end
+    if type(runtime) == "table" then
+        runtime.unloading = true
+    end
 
-	for flag, value in pairs(library.flags or {}) do
-		if type(flag) == "string"
-			and string.sub(flag, 1, 10) == "Universal "
-			and type(value) == "boolean" then
-			library.flags[flag] = false
-		end
-	end
-	state.aimTarget = nil
+    for flag, value in pairs(library.flags or {}) do
+        if type(flag) == "string"
+            and string.sub(flag, 1, 10) == "Universal "
+            and type(value) == "boolean" then
+            library.flags[flag] = false
+        end
+    end
+    state.aimTarget = nil
 
 	local camera = services.Workspace.CurrentCamera
-	if camera then
-		camera.FieldOfView = state.original.cameraFov or 70
-	end
+    if camera then
+        camera.FieldOfView = state.original.cameraFov or 70
+    end
 
 	connections:disconnectAll()
 
-	if state.overlays.root then
-		pcall(function()
-			state.overlays.root:Destroy()
-		end)
-		state.overlays.root = nil
-	end
+    if state.overlays.root then
+        pcall(function()
+            state.overlays.root:Destroy()
+        end)
+        state.overlays.root = nil
+    end
 end)
 
 library:SetOpen(true)
@@ -200,11 +213,11 @@ library:selectTab(ctx.tabs.home)
 if ctx.refs.runtimeStatus then
 	ctx.refs.runtimeStatus.Text = "Status: ready · Signature ESP active"
 end
-ctx.notify("xanhub Universal ready", 3)
+ctx.notify(runtime and runtime.reloadedFromUpdate and "xanhub Universal updated" or "xanhub Universal ready", 3)
 print("[xanhub] Universal loaded for place", game.PlaceId)
 
 return {
-	library = library,
-	runtime = runtime,
-	state = state,
+    library = library,
+    runtime = runtime,
+    state = state,
 }

@@ -1364,19 +1364,19 @@ return function(ctx)
                     if character and humanoid and rootPart and humanoid.Health > 0 then
                         if not entry or entry.character ~= character or entry.rootPart ~= rootPart then
                             entry = createEntry(player, character)
-                        end
+                    end
 
-                        if entry then
+                    if entry then
                             local distance = localRoot and (localRoot.Position - rootPart.Position).Magnitude or math.huge
                             local isTarget = ctx.state.aimTarget == player
                             local espSameTeam = flag("Universal ESP Team Check", false)
-                                and ctx.LocalPlayer.Team ~= nil
-                                and player.Team == ctx.LocalPlayer.Team
+                            and ctx.LocalPlayer.Team ~= nil
+                            and player.Team == ctx.LocalPlayer.Team
                             local targetSameTeam = targetTeamCheck
-                                and ctx.LocalPlayer.Team ~= nil
-                                and player.Team == ctx.LocalPlayer.Team
-                            local visibleForESP = enabled and not espSameTeam and distance <= maxDistance
-                            local visibleForTarget = isTarget and not targetSameTeam and distance <= targetMaxDistance
+                            and ctx.LocalPlayer.Team ~= nil
+                            and player.Team == ctx.LocalPlayer.Team
+                        local visibleForESP = enabled and not espSameTeam and distance <= maxDistance
+                        local visibleForTarget = isTarget and not targetSameTeam and distance <= targetMaxDistance
 
                             if visibleForESP or visibleForTarget then
                                 table.insert(candidates, {

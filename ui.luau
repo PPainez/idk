@@ -458,6 +458,12 @@
 		self.popup = nil
 		self.slider = nil
 		self.warning = nil
+
+		if self.base then
+			pcall(function()
+				self.base:Destroy()
+			end)
+		end
 		self.base = nil
 		self.main = nil
 		self.uiScale = nil
@@ -2961,9 +2967,12 @@
 				Font = Enum.Font.Code,
 				TextWrapped = true,
 				ClipsDescendants = true,
+				Visible = self.hidden ~= true,
 				Parent = library.main
 			})
-			library.tabSize = library.tabSize + size
+			if self.hidden ~= true then
+				library.tabSize = library.tabSize + size
+			end
 
 			self.button.InputBegan:Connect(function(input)
 				if input.UserInputType.Name == "MouseButton1" then
@@ -2978,6 +2987,14 @@
 					end)
 					if not ok then
 						warn("[xanhub] Failed to initialize a column in tab '" .. tostring(self.title) .. "': " .. tostring(err))
+					end
+				end
+			end
+
+			if self.hidden == true then
+				for _, column in next, self.columns do
+					if column.main then
+						column.main.Visible = false
 					end
 				end
 			end
@@ -2996,24 +3013,79 @@
 		warning.type = warning.type == "confirm" and "confirm" or ""
 
 		local answer
+		local function createDialogButton(parent, text, position, onSelect)
+			local button = library:Create("TextButton", {
+				ZIndex = 12,
+				Position = position,
+				Size = UDim2.new(0, 100, 0, 24),
+				BackgroundColor3 = Color3.fromRGB(24, 28, 37),
+				BorderColor3 = Color3.new(),
+				Text = text,
+				TextSize = 16,
+				Font = Enum.Font.Code,
+				TextColor3 = Color3.new(1, 1, 1),
+				AutoButtonColor = false,
+				Active = true,
+				Parent = parent,
+			})
+
+			library:Create("ImageLabel", {
+				ZIndex = 12,
+				Size = UDim2.new(1, 0, 1, 0),
+				BackgroundTransparency = 1,
+				Image = "rbxassetid://2454009026",
+				ImageColor3 = Color3.new(),
+				ImageTransparency = 0.8,
+				Parent = button,
+			})
+
+			library:Create("ImageLabel", {
+				ZIndex = 12,
+				Size = UDim2.new(1, 0, 1, 0),
+				BackgroundTransparency = 1,
+				Image = "rbxassetid://2592362371",
+				ImageColor3 = Color3.fromRGB(44, 50, 65),
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(2, 2, 62, 62),
+				Parent = button,
+			})
+
+			button.MouseButton1Click:Connect(function()
+				if answer == nil then
+					answer = onSelect
+				end
+			end)
+
+			return button
+		end
+
 		function warning:Show()
+			answer = nil
 			library.warning = warning
-			if warning.main and warning.type == "" then return end
-			if library.popup then library.popup:Close() end
+
+			if warning.main and warning.type == "" then
+				return false
+			end
+
+			if library.popup then
+				library.popup:Close()
+			end
+
 			if not warning.main then
 				warning.main = library:Create("TextButton", {
-					ZIndex = 2,
+					ZIndex = 10,
 					Size = UDim2.new(1, 0, 1, 0),
 					BackgroundTransparency = 0.6,
 					BackgroundColor3 = Color3.new(),
 					BorderSizePixel = 0,
 					Text = "",
 					AutoButtonColor = false,
-					Parent = library.main
+					Active = true,
+					Parent = library.main,
 				})
 
 				warning.message = library:Create("TextLabel", {
-					ZIndex = 2,
+					ZIndex = 11,
 					Position = UDim2.new(0, 20, 0.5, -60),
 					Size = UDim2.new(1, -40, 0, 40),
 					BackgroundTransparency = 1,
@@ -3022,142 +3094,39 @@
 					TextColor3 = Color3.new(1, 1, 1),
 					TextWrapped = true,
 					RichText = true,
-					Parent = warning.main
+					Parent = warning.main,
 				})
 
+				warning.main.MouseButton1Click:Connect(function()
+					if answer == nil then
+						answer = false
+					end
+				end)
+
 				if warning.type == "confirm" then
-					local button = library:Create("TextLabel", {
-						ZIndex = 2,
-						Position = UDim2.new(0.5, -105, 0.5, -10),
-						Size = UDim2.new(0, 100, 0, 20),
-						BackgroundColor3 = Color3.fromRGB(24, 28, 37),
-						BorderColor3 = Color3.new(),
-						Text = "Yes",
-						TextSize = 16,
-						Font = Enum.Font.Code,
-						TextColor3 = Color3.new(1, 1, 1),
-						Parent = warning.main
-					})
-
-					library:Create("ImageLabel", {
-						ZIndex = 2,
-						Size = UDim2.new(1, 0, 1, 0),
-						BackgroundTransparency = 1,
-						Image = "rbxassetid://2454009026",
-						ImageColor3 = Color3.new(),
-						ImageTransparency = 0.8,
-						Parent = button
-					})
-
-					library:Create("ImageLabel", {
-						ZIndex = 2,
-						Size = UDim2.new(1, 0, 1, 0),
-						BackgroundTransparency = 1,
-						Image = "rbxassetid://2592362371",
-						ImageColor3 = Color3.fromRGB(44, 50, 65),
-						ScaleType = Enum.ScaleType.Slice,
-						SliceCenter = Rect.new(2, 2, 62, 62),
-						Parent = button
-					})
-
-					local button1 = library:Create("TextLabel", {
-						ZIndex = 2,
-						Position = UDim2.new(0.5, 5, 0.5, -10),
-						Size = UDim2.new(0, 100, 0, 20),
-						BackgroundColor3 = Color3.fromRGB(24, 28, 37),
-						BorderColor3 = Color3.new(),
-						Text = "No",
-						TextSize = 16,
-						Font = Enum.Font.Code,
-						TextColor3 = Color3.new(1, 1, 1),
-						Parent = warning.main
-					})
-
-					library:Create("ImageLabel", {
-						ZIndex = 2,
-						Size = UDim2.new(1, 0, 1, 0),
-						BackgroundTransparency = 1,
-						Image = "rbxassetid://2454009026",
-						ImageColor3 = Color3.new(),
-						ImageTransparency = 0.8,
-						Parent = button1
-					})
-
-					library:Create("ImageLabel", {
-						ZIndex = 2,
-						Size = UDim2.new(1, 0, 1, 0),
-						BackgroundTransparency = 1,
-						Image = "rbxassetid://2592362371",
-						ImageColor3 = Color3.fromRGB(44, 50, 65),
-						ScaleType = Enum.ScaleType.Slice,
-						SliceCenter = Rect.new(2, 2, 62, 62),
-						Parent = button1
-					})
-
-					button.InputBegan:Connect(function(input)
-						if input.UserInputType.Name == "MouseButton1" then
-							answer = true
-						end
-					end)
-
-					button1.InputBegan:Connect(function(input)
-						if input.UserInputType.Name == "MouseButton1" then
-							answer = false
-						end
-					end)
+					createDialogButton(warning.main, "Yes", UDim2.new(0.5, -105, 0.5, -10), true)
+					createDialogButton(warning.main, "No", UDim2.new(0.5, 5, 0.5, -10), false)
 				else
-					local button = library:Create("TextLabel", {
-						ZIndex = 2,
-						Position = UDim2.new(0.5, -50, 0.5, -10),
-						Size = UDim2.new(0, 100, 0, 20),
-						BackgroundColor3 = Color3.fromRGB(18, 21, 28),
-						BorderColor3 = Color3.new(),
-						Text = "OK",
-						TextSize = 16,
-						Font = Enum.Font.Code,
-						TextColor3 = Color3.new(1, 1, 1),
-						Parent = warning.main
-					})
-
-					library:Create("ImageLabel", {
-						ZIndex = 2,
-						Size = UDim2.new(1, 0, 1, 0),
-						BackgroundTransparency = 1,
-						Image = "rbxassetid://2454009026",
-						ImageColor3 = Color3.new(),
-						ImageTransparency = 0.8,
-						Parent = button
-					})
-
-					library:Create("ImageLabel", {
-						ZIndex = 2,
-						AnchorPoint = Vector2.new(0.5, 0.5),
-						Position = UDim2.new(0.5, 0, 0.5, 0),
-						Size = UDim2.new(1, -2, 1, -2),
-						BackgroundTransparency = 1,
-						Image = "rbxassetid://3570695787",
-						ImageColor3 = Color3.fromRGB(30, 35, 46),
-						Parent = button
-					})
-
-					button.InputBegan:Connect(function(input)
-						if input.UserInputType.Name == "MouseButton1" then
-							answer = true
-						end
-					end)
+					createDialogButton(warning.main, "OK", UDim2.new(0.5, -50, 0.5, -10), true)
 				end
 			end
+
+			answer = nil
 			warning.main.Visible = true
 			warning.message.Text = warning.text
 
-			repeat task.wait()
+			repeat
+				task.wait()
 			until answer ~= nil or library.unloaded
+
+			local result = answer == true
 			if library.unloaded and answer == nil then
-				answer = false
+				result = false
 			end
+
 			task.spawn(warning.Close)
 			library.warning = nil
-			return answer
+			return result
 		end
 
 		function warning:Close()
@@ -3593,7 +3562,10 @@
 			end)
 
 			function self:selectTab(tab)
-				if not tab or not tab.button or self.currentTab == tab then
+				if not tab or not tab.button or tab.hidden == true or tab.button.Visible == false then
+					return false
+				end
+				if self.currentTab == tab then
 					return false
 				end
 				if self.popup then
@@ -3628,6 +3600,56 @@
 				return true
 			end
 
+			function self:RefreshTabBar()
+				local offset = 0
+				for _, tab in ipairs(self.tabs) do
+					if tab.button and tab.hidden ~= true then
+						tab.button.Visible = true
+						tab.button.Position = UDim2.new(0, offset, 0, 22)
+						offset = offset + tab.button.Size.X.Offset
+					elseif tab.button then
+						tab.button.Visible = false
+					end
+				end
+				self.tabSize = offset
+				if self.currentTab and self.currentTab.button and self.currentTab.button.Visible then
+					local tabWidth = self.currentTab.button.AbsoluteSize.X
+					if tabWidth <= 0 then
+						tabWidth = self.currentTab.button.Size.X.Offset
+					end
+					self:SafeTween(self.tabHighlight, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+						Position = UDim2.new(0, self.currentTab.button.Position.X.Offset, 0, 50),
+						Size = UDim2.new(0, tabWidth, 0, 1),
+					})
+				end
+			end
+
+			function self:SetTabVisible(tab, visible)
+				if not tab or not tab.button then
+					return false
+				end
+
+				visible = visible == true
+				tab.hidden = not visible
+
+				if not visible and self.currentTab == tab then
+					for _, candidate in ipairs(self.tabs) do
+						if candidate ~= tab and candidate.hidden ~= true and candidate.button then
+							self:selectTab(candidate)
+							break
+						end
+					end
+					for _, column in ipairs(tab.columns) do
+						if column.main then
+							column.main.Visible = false
+						end
+					end
+				end
+
+				self:RefreshTabBar()
+				return true
+			end
+
 			local firstTab
 			for _, tab in next, self.tabs do
 				if tab.canInit then
@@ -3635,7 +3657,16 @@
 						tab:Init()
 					end)
 					if ok and tab.button then
-						firstTab = firstTab or tab
+						if tab.hidden == true then
+							tab.button.Visible = false
+							for _, column in ipairs(tab.columns) do
+								if column.main then
+									column.main.Visible = false
+								end
+							end
+						else
+							firstTab = firstTab or tab
+						end
 					else
 						warn("[xanhub] Failed to initialize tab '" .. tostring(tab.title) .. "': " .. tostring(err))
 					end
