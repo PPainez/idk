@@ -156,7 +156,24 @@ return function(ctx)
 	})
 
 	local debugSection = columns.combatRight:AddSection("Debug")
-	debugSection:AddToggle({ text = "Combat Debug Logs", flag = "Gakuran Combat Debug Logs", state = false })
+	debugSection:AddToggle({
+		text = "Combat Debug Logs",
+		flag = "Gakuran Combat Debug Logs",
+		state = false,
+		tip = "Toasts/prints for combat attacks only (not walk/run/idle)",
+	})
+	debugSection:AddToggle({
+		text = "Log Unknown Combat Anims",
+		flag = "Gakuran Combat Log Unknown",
+		state = true,
+		tip = "When debug is on, log combat-looking anims missing from the DB",
+	})
+	debugSection:AddToggle({
+		text = "Parry Unknown Combat Anims",
+		flag = "Gakuran Parry Unknown Combat",
+		state = true,
+		tip = "If name looks like M1/M2/Hit/etc but ID is not in DB, still parry with default timing",
+	})
 	ctx.refs.combatStatus = debugSection:AddLabel("Status: idle")
 
 	-- State --------------------------------------------------------------
@@ -623,6 +640,84 @@ return function(ctx)
 		end)
 	end
 
+	local function animNameOf(track)
+		local anim = track and track.Animation
+		if anim and type(anim.Name) == "string" and anim.Name ~= "" then
+			return anim.Name
+		end
+		if type(track.Name) == "string" and track.Name ~= "" then
+			return track.Name
+		end
+		return ""
+	end
+
+	local function isLocomotionName(name)
+		name = string.lower(tostring(name or ""))
+		if name == "" then
+			return false
+		end
+		return name:find("walk", 1, true)
+			or name:find("run", 1, true)
+			or name:find("idle", 1, true)
+			or name:find("jump", 1, true)
+			or name:find("fall", 1, true)
+			or name:find("climb", 1, true)
+			or name:find("swim", 1, true)
+			or name:find("sit", 1, true)
+			or name:find("dance", 1, true)
+			or name:find("emote", 1, true)
+			or name:find("toolnone", 1, true)
+			or name:find("backpedal", 1, true)
+	end
+
+	local function looksLikeCombatName(name)
+		name = tostring(name or "")
+		if name == "" or isLocomotionName(name) then
+			return false
+		end
+		local lower = string.lower(name)
+		if lower:find("block", 1, true) and not lower:find("hit", 1, true) then
+			return false
+		end
+		if lower:find("parry", 1, true) or lower:find("guard", 1, true) and not lower:find("guardbreak", 1, true) then
+			return false
+		end
+		return lower:find("m1", 1, true)
+			or lower:find("m2", 1, true)
+			or lower:find("ehit", 1, true)
+			or lower:find("hit", 1, true)
+			or lower:find("punch", 1, true)
+			or lower:find("kick", 1, true)
+			or lower:find("attack", 1, true)
+			or lower:find("swing", 1, true)
+			or lower:find("strike", 1, true)
+			or lower:find("combo", 1, true)
+			or lower:find("grapple", 1, true)
+			or lower:find("throw", 1, true)
+			or lower:find("momentum", 1, true)
+			or lower:find("guardbreak", 1, true)
+	end
+
+	local function classifyFallback(name)
+		local lower = string.lower(tostring(name or ""))
+		if lower:find("m2", 1, true) then
+			return "M2", 0.38
+		end
+		if lower:find("ehit", 1, true) or lower:find("guardbreak", 1, true) then
+			return "EHit", 0.30
+		end
+		if lower:find("4th", 1, true) then
+			return "M1", 0.35
+		end
+		if lower:find("1st", 1, true) then
+			return "M1", 0.30
+		end
+		if lower:find("2nd", 1, true) or lower:find("3rd", 1, true) then
+			return "M1", 0.28
+		end
+		return "M1", 0.32
+	end
+
 	local function onAttackTrack(attacker, track)
 		if ctx.state.unloading then
 			return
@@ -644,23 +739,61 @@ return function(ctx)
 		end
 
 		local anim = track.Animation
+		local name = animNameOf(track)
 		local id = anim and anim.AnimationId
 		if not id and type(track.AnimationId) == "string" then
 			id = track.AnimationId
 		end
+
+		-- Never treat locomotion as an attack (walk/run/idle spam).
+		if isLocomotionName(name) then
+			st.seenTracks[track] = true
+			return
+		end
+
 		local db = st.db
 		if not db then
 			return
 		end
 
 		local entry = db:lookup(id)
+		local pure = tostring(id or ""):match("%d+") or tostring(id or "")
+
 		if not entry then
-			-- Unknown anim: still log when debug is on (helps expand DB).
-			if flag("Gakuran Combat Debug Logs", false) then
-				local pure = tostring(id or ""):match("%d+") or tostring(id)
-				debugLog("unknown anim", pure, attacker.Name)
+			if looksLikeCombatName(name) then
+				if flag("Gakuran Combat Debug Logs", false) and flag("Gakuran Combat Log Unknown", true) then
+					debugLog("unknown combat anim", name, pure, attacker.Name)
+					combatToast("warning", "Unknown Combat Anim", string.format(
+						"%s · id %s\nfrom %s · not in DB yet",
+						name ~= "" and name or "?",
+						pure,
+						attacker.Name
+					), "combat-unknown-" .. pure)
+				end
+
+				if flag("Gakuran Parry Unknown Combat", true) then
+					local kind, delay = classifyFallback(name)
+					entry = {
+						id = pure,
+						name = name ~= "" and name or ("Unknown_" .. pure),
+						kind = kind,
+						hitDelay = delay,
+						window = 0.125,
+					}
+					-- Learn it for this session so we don't re-toast every swing.
+					if pure and pure ~= "" and db.byId then
+						db.byId[pure] = entry
+						db.count = (tonumber(db.count) or 0) + 1
+					end
+				else
+					st.seenTracks[track] = true
+					return
+				end
+			else
+				-- Non-combat unknown (accessories, tools, emotes, etc.) — ignore silently.
+				st.seenTracks[track] = true
+				return
 			end
-			return
 		end
 
 		st.seenTracks[track] = true
