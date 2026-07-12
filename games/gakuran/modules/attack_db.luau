@@ -210,35 +210,45 @@ function AttackDB.create()
 			end
 		end
 
+		local function safeDescendants(root)
+			local ok, list = pcall(function()
+				return root:GetDescendants()
+			end)
+			if ok and type(list) == "table" then
+				return list
+			end
+			return {}
+		end
+
 		if utils and type(utils.GetAllCombatStyles) == "function" then
 			local ok, styles = pcall(utils.GetAllCombatStyles)
 			if ok and type(styles) == "table" then
 				for _, style in ipairs(styles) do
 					local folderOk, folder = pcall(utils.GetCombatAnimsFolder, style)
-					if folderOk and folder then
-						for _, d in ipairs(folder:GetDescendants()) do
-							addAnim(style, d)
+					if folderOk and typeof(folder) == "Instance" then
+						for _, d in ipairs(safeDescendants(folder)) do
+							pcall(addAnim, style, d)
 						end
 					end
 				end
 			end
 		end
 
-		-- BaseCombat always
-		local base = game:GetService("ReplicatedStorage"):FindFirstChild("Animations")
-		base = base and base:FindFirstChild("BaseCombat")
-		if base then
-			for _, d in ipairs(base:GetDescendants()) do
-				addAnim("Base", d)
+		-- BaseCombat / Combat folders (defensive — some executors restrict certain trees)
+		local anims = game:GetService("ReplicatedStorage"):FindFirstChild("Animations")
+		if anims then
+			local base = anims:FindFirstChild("BaseCombat")
+			if base then
+				for _, d in ipairs(safeDescendants(base)) do
+					pcall(addAnim, "Base", d)
+				end
 			end
-		end
-
-		local combat = game:GetService("ReplicatedStorage"):FindFirstChild("Animations")
-		combat = combat and combat:FindFirstChild("Combat")
-		if combat then
-			for _, styleFolder in ipairs(combat:GetChildren()) do
-				for _, d in ipairs(styleFolder:GetDescendants()) do
-					addAnim(styleFolder.Name, d)
+			local combat = anims:FindFirstChild("Combat")
+			if combat then
+				for _, styleFolder in ipairs(combat:GetChildren()) do
+					for _, d in ipairs(safeDescendants(styleFolder)) do
+						pcall(addAnim, styleFolder.Name, d)
+					end
 				end
 			end
 		end

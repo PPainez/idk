@@ -529,11 +529,11 @@ return function(ctx)
 			st.hooks[key] = nil
 		end
 
-		local conn = animator.AnimationPlayed:Connect(function(track)
+		-- Must pass (signal, callback). Passing a Connection makes Connect() explode.
+		local conn = ctx.addConnection(animator.AnimationPlayed, function(track)
 			onAnimationPlayed(player, track)
 		end)
 		st.hooks[key] = conn
-		ctx.addConnection(conn)
 	end
 
 	local function unhookPlayer(player)

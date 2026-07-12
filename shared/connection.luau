@@ -1,7 +1,8 @@
 --[[
     xanhub | shared connection manager
 
-    Routes signal connections through library:AddConnection when available.
+    Prefer library:AddConnection(signal, callback) which owns Connect + cleanup.
+    Falls back to raw Connect + local list when the library is unavailable.
 ]]
 
 local Connection = {}
@@ -13,13 +14,35 @@ function Connection.new(library, fallbackList)
 	}
 
 	function pool:connect(signal, callback)
-		local connection = signal:Connect(callback)
+		-- Already-connected RBXScriptConnection: track only, do not Connect again.
+		if typeof(signal) == "RBXScriptConnection" then
+			if type(self.fallback) == "table" then
+				table.insert(self.fallback, signal)
+			end
+			return signal
+		end
+
+		if type(callback) ~= "function" then
+			return nil
+		end
 
 		if self.library
 			and type(self.library.AddConnection) == "function"
 			and not self.library.unloaded then
-			self.library:AddConnection(connection)
-		elseif type(self.fallback) == "table" then
+			local connection = self.library:AddConnection(signal, callback)
+			if connection then
+				return connection
+			end
+		end
+
+		local ok, connection = pcall(function()
+			return signal:Connect(callback)
+		end)
+		if not ok or not connection then
+			return nil
+		end
+
+		if type(self.fallback) == "table" then
 			table.insert(self.fallback, connection)
 		end
 
