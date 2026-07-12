@@ -1,15 +1,8 @@
 --[[
     xanhub | gakuran | basketball
 
-    Reversed from BasketballModule / BasketballClient:
-      BasketballShoot:FireServer(tokenA, tokenB, tokenC, timingOffset, rimPos?)
-      Perfect meter center ≈ 0.76 progress (~0.50s hold on F)
-
-    Critical design rules:
-      - Never call Roblox methods (namecall) from inside a __namecall hook
-      - Precompute the green offset on Heartbeat; hook only swaps a number
-      - Do not FireServer ourselves (desyncs BasketballClient and blocks shooting)
-      - gakuran.luau seeds state.basketball = {} so fields must be filled in
+    Auto Release only: after charging with F, release at perfect meter progress (~0.76 / ~0.50s).
+    ESP: all floor balls + rims (unique instance keys; highlights parented to overlay).
 ]]
 
 return function(ctx)
@@ -19,7 +12,6 @@ return function(ctx)
 	local RunService = ctx.RunService
 	local UserInputService = ctx.UserInputService
 	local Workspace = ctx.Workspace
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 	local LocalPlayer = Players.LocalPlayer
 
 	local METER_DURATION = 0.6578947368421053
@@ -29,16 +21,10 @@ return function(ctx)
 
 	local shoot = columns.basketballLeft:AddSection("Shooting")
 	shoot:AddToggle({
-		text = "Auto Green",
-		flag = "Gakuran Auto Green",
-		state = false,
-		tip = "Rewrites BasketballShoot timing offset to the Perfect zone",
-	})
-	shoot:AddToggle({
 		text = "Auto Release",
 		flag = "Gakuran Basketball Auto Release",
-		state = true,
-		tip = "Releases F at the perfect meter window (needs VirtualInputManager)",
+		state = false,
+		tip = "Releases your shot at the perfect meter window (~0.50s hold)",
 	})
 	shoot:AddToggle({
 		text = "Humanize",
@@ -54,13 +40,7 @@ return function(ctx)
 		float = 1,
 		suffix = "%",
 	})
-	shoot:AddToggle({
-		text = "No Dribble Cooldown",
-		flag = "Gakuran No Dribble Cooldown",
-		state = false,
-		tip = "Clears client Z/C dribble move cooldown when possible",
-	})
-	shoot:AddLabel("Hold F to shoot · green ~0.50s · no gamepad")
+	shoot:AddLabel("Hold F to charge · auto-releases at green window")
 
 	local espSection = columns.basketballRight:AddSection("Basketball ESP")
 	espSection:AddToggle({ text = "Basketball ESP", flag = "Gakuran Basketball ESP", state = false })
@@ -72,21 +52,16 @@ return function(ctx)
 	debugSection:AddToggle({ text = "Basketball Debug Logs", flag = "Gakuran Basketball Debug", state = false })
 	ctx.refs.basketballStatus = debugSection:AddLabel("Status: idle")
 
-	-- State (must merge — gakuran.luau already sets state.basketball = {}) -
+	-- State (gakuran seeds basketball = {}) --------------------------------
 
 	if type(ctx.state.basketball) ~= "table" then
 		ctx.state.basketball = {}
 	end
 	local bb = ctx.state.basketball
-
-	bb.hookInstalled = bb.hookInstalled == true
 	bb.releaseToken = tonumber(bb.releaseToken) or 0
-	bb.lastShotAt = tonumber(bb.lastShotAt) or 0
-	bb.cachedOffset = tonumber(bb.cachedOffset) or 0
-	bb.cachedLabel = bb.cachedLabel or "Perfect"
-	bb.cachedDist = tonumber(bb.cachedDist) or 0
-	bb.module = bb.module
-	bb.shootRemote = bb.shootRemote
+	bb.controller = nil
+	bb.rimCache = type(bb.rimCache) == "table" and bb.rimCache or {}
+	bb.rimCacheAt = tonumber(bb.rimCacheAt) or 0
 
 	if type(bb.esp) ~= "table" then
 		bb.esp = {}
@@ -130,51 +105,6 @@ return function(ctx)
 			and character:GetAttribute("ItemPhase") == "Equipped"
 	end
 
-	local function findLoadedModule(name)
-		if type(getloadedmodules) ~= "function" then
-			return nil
-		end
-		local ok, modules = pcall(getloadedmodules)
-		if not ok or type(modules) ~= "table" then
-			return nil
-		end
-		for _, moduleScript in ipairs(modules) do
-			if moduleScript and moduleScript.Name == name then
-				local reqOk, result = pcall(require, moduleScript)
-				if reqOk and type(result) == "table" then
-					return result
-				end
-			end
-		end
-		return nil
-	end
-
-	local function getBasketballModule()
-		if type(bb.module) == "table" then
-			return bb.module
-		end
-		local mod = findLoadedModule("BasketballModule")
-		if mod then
-			bb.module = mod
-			if type(mod.METER_DURATION) == "number" then
-				METER_DURATION = mod.METER_DURATION
-			end
-		end
-		return bb.module
-	end
-
-	local function getShootRemote()
-		if bb.shootRemote and bb.shootRemote.Parent then
-			return bb.shootRemote
-		end
-		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-		local remote = remotes and remotes:FindFirstChild("BasketballShoot")
-		if remote then
-			bb.shootRemote = remote
-		end
-		return remote
-	end
-
 	local function getRootPart(instance)
 		if not instance then
 			return nil
@@ -184,231 +114,137 @@ return function(ctx)
 		end
 		if instance:IsA("Model") then
 			return instance.PrimaryPart
-				or instance:FindFirstChild("Rim")
 				or instance:FindFirstChild("Basketball")
+				or instance:FindFirstChild("Rim")
 				or instance:FindFirstChildWhichIsA("BasePart", true)
 		end
 		return nil
 	end
 
-	local function findClosestRim(position)
-		local best, bestDist
-		local hoops = Workspace:FindFirstChild("Hoops")
-		if not hoops then
-			return nil, nil
+	local function getEspParent()
+		local root = ctx.createOverlayRoot and ctx.createOverlayRoot()
+		if root then
+			return root
 		end
-		for _, descendant in ipairs(hoops:GetDescendants()) do
-			if descendant.Name == "Rim" and descendant:IsA("BasePart") then
-				local delta = descendant.Position - position
-				local dist = Vector3.new(delta.X, 0, delta.Z).Magnitude
-				if not bestDist or dist < bestDist then
-					best = descendant
-					bestDist = dist
-				end
-			end
+		if library.base then
+			return library.base
 		end
-		return best, bestDist
+		return LocalPlayer:FindFirstChildOfClass("PlayerGui")
 	end
 
-	-- Timing (safe to call outside namecall hooks) -----------------------
+	-- BasketballClient controller (methods live on metatable) ------------
 
-	local function evaluateAtProgress(rimDist, contestPct, progress)
-		rimDist = tonumber(rimDist) or 20
-		contestPct = tonumber(contestPct) or 0
-		progress = tonumber(progress) or PERFECT_PROGRESS
+	local function isController(value)
+		if type(value) ~= "table" then
+			return false
+		end
+		local okShoot, shoot = pcall(function()
+			return value._shootRemote
+		end)
+		if not okShoot or typeof(shoot) ~= "Instance" or shoot.Name ~= "BasketballShoot" then
+			return false
+		end
+		local okRelease, release = pcall(function()
+			return value._releaseShot
+		end)
+		return okRelease and type(release) == "function"
+	end
 
-		local mod = getBasketballModule()
-		if mod and type(mod.getZonesForDistance) == "function" then
-			local ok, result = pcall(function()
-				local zones = mod.getZonesForDistance(rimDist)
-				if type(mod.applyContestToZones) == "function" then
-					zones = mod.applyContestToZones(zones, contestPct)
-				end
-				if type(mod.applyDistanceOffsetToZones) == "function" then
-					zones = mod.applyDistanceOffsetToZones(zones, rimDist, contestPct)
-				end
-				if type(mod.evaluateTimingFromZones) == "function" then
-					return mod.evaluateTimingFromZones(progress, zones)
-				end
+	local function findController(force)
+		if not force and bb.controller and isController(bb.controller) then
+			return bb.controller
+		end
+		if type(getgc) ~= "function" then
+			return nil
+		end
+
+		local ok, objects = pcall(getgc, true)
+		if not ok or type(objects) ~= "table" then
+			ok, objects = pcall(getgc)
+			if not ok or type(objects) ~= "table" then
 				return nil
-			end)
-			if ok and type(result) == "table" and type(result.offset) == "number" then
-				return result
 			end
 		end
 
-		return {
-			id = "Perfect",
-			label = "Perfect",
-			offset = 0,
-		}
+		for _, value in ipairs(objects) do
+			if isController(value) then
+				bb.controller = value
+				debugLog("controller found")
+				return value
+			end
+		end
+		return nil
 	end
 
-	local function refreshCachedOffset()
-		local root = ctx.getRoot()
-		if not root then
-			bb.cachedOffset = 0
-			bb.cachedLabel = "Perfect"
-			bb.cachedDist = 0
-			return
+	local function releaseShotOnController(progress)
+		local controller = findController(false)
+		if not controller then
+			controller = findController(true)
+		end
+		if not controller then
+			return false, "no BasketballClient controller"
 		end
 
-		local rim, rimDist = findClosestRim(root.Position)
-		if not rimDist then
-			rimDist = 20
-		end
-
-		local contestPct = 0
-		local mod = getBasketballModule()
-		local character = ctx.getCharacter()
-		if mod and character and type(mod.computeContestPctForShooter) == "function" then
-			local ok, value = pcall(mod.computeContestPctForShooter, character, LocalPlayer)
-			if ok and type(value) == "number" then
-				contestPct = value
-			end
-		end
-
-		local progress = PERFECT_PROGRESS
-		local label = "Perfect"
-
-		if flag("Gakuran Basketball Humanize", false) then
-			local jitter = math.clamp(tonumber(flag("Gakuran Basketball Jitter", 15)) or 15, 0, 100)
-			if jitter > 0 and math.random(1, 100) <= jitter then
-				-- Nudge progress slightly inside slight-early / slight-late band.
-				local side = (math.random() < 0.5) and -1 or 1
-				progress = math.clamp(PERFECT_PROGRESS + side * (0.02 + math.random() * 0.03), 0.05, 0.95)
-				label = side < 0 and "SlightEarly" or "SlightLate"
-			end
-		end
-
-		local result = evaluateAtProgress(rimDist, contestPct, progress)
-		bb.cachedOffset = tonumber(result.offset) or 0
-		bb.cachedLabel = tostring(result.id or result.label or label)
-		bb.cachedDist = rimDist
-		bb.cachedContest = contestPct
-	end
-
-	-- Hook: ONLY swaps a number from cache — no Roblox API calls ---------
-
-	local function installShootHook()
-		if bb.hookInstalled then
-			return true
-		end
-
-		local remote = getShootRemote()
-		if not remote then
-			setStatus("waiting for BasketballShoot")
-			return false
-		end
-
-		-- Prefer hookfunction on FireServer (no global namecall pollution).
-		if type(hookfunction) == "function" then
-			local oldFire
-			local function fireHook(self, ...)
-				if flag("Gakuran Auto Green", false) and self == remote then
-					local args = { ... }
-					if type(args[4]) == "number" then
-						local newOffset = tonumber(bb.cachedOffset) or 0
-						debugLog("FireServer offset", args[4], "->", newOffset, bb.cachedLabel)
-						args[4] = newOffset
-						bb.lastShotAt = os.clock()
-						setStatus(string.format("greened %.3f (%s)", newOffset, bb.cachedLabel))
-						return oldFire(self, table.unpack(args, 1, math.max(#args, 5)))
-					end
-				end
-				return oldFire(self, ...)
-			end
-
-			if type(newcclosure) == "function" then
-				fireHook = newcclosure(fireHook)
-			end
-
-			local ok, err = pcall(function()
-				oldFire = hookfunction(remote.FireServer, fireHook)
-			end)
-			if ok and oldFire then
-				bb.hookInstalled = true
-				bb.hookKind = "hookfunction"
-				setStatus("auto green ready (FireServer)")
-				debugLog("hookfunction on BasketballShoot.FireServer")
-				return true
-			end
-			debugLog("hookfunction failed", err)
-		end
-
-		if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
-			setStatus("no hook APIs — manual timing only")
-			return false
-		end
-
-		local oldNamecall
-		local function namecallHook(self, ...)
-			local method = getnamecallmethod()
-			-- Strict checks; never call any Instance method inside this branch.
-			if
-				method == "FireServer"
-				and self == remote
-				and flag("Gakuran Auto Green", false)
-			then
-				if type(checkcaller) == "function" and checkcaller() then
-					return oldNamecall(self, ...)
-				end
-				local a1, a2, a3, a4, a5, a6, a7 = ...
-				if type(a4) == "number" then
-					local newOffset = tonumber(bb.cachedOffset) or 0
-					bb.lastShotAt = os.clock()
-					-- Status/debug deferred so we don't namecall from here.
-					task.defer(function()
-						setStatus(string.format("greened %.3f (%s)", newOffset, tostring(bb.cachedLabel)))
-						debugLog("namecall offset", a4, "->", newOffset, bb.cachedLabel)
-					end)
-					return oldNamecall(self, a1, a2, a3, newOffset, a5, a6, a7)
-				end
-			end
-			return oldNamecall(self, ...)
-		end
-
-		if type(newcclosure) == "function" then
-			namecallHook = newcclosure(namecallHook)
+		local okCharging, charging = pcall(function()
+			return controller._isCharging
+		end)
+		if not okCharging or not charging then
+			return false, "not charging"
 		end
 
 		local ok, err = pcall(function()
-			oldNamecall = hookmetamethod(game, "__namecall", namecallHook)
+			controller:_releaseShot(progress)
 		end)
-		if not ok or not oldNamecall then
-			setStatus("hook failed: " .. tostring(err))
-			debugLog("hookmetamethod failed", err)
-			return false
+		if not ok then
+			return false, tostring(err)
 		end
-
-		bb.hookInstalled = true
-		bb.hookKind = "namecall"
-		setStatus("auto green ready (namecall)")
-		debugLog("namecall hook installed")
 		return true
 	end
 
-	-- Auto-release (VIM only — never FireServer ourselves) --------------
+	local function tryKeyRelease()
+		-- Best-effort input simulation (some executors only).
+		local methods = {}
 
-	local function sendKeyUp(keyCode)
-		local vim
-		local ok = pcall(function()
-			vim = game:GetService("VirtualInputManager")
+		local vimOk, vim = pcall(function()
+			return game:GetService("VirtualInputManager")
 		end)
-		if not (ok and vim) then
-			return false
+		if vimOk and vim then
+			table.insert(methods, function()
+				vim:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+			end)
 		end
-		local sent = pcall(function()
-			vim:SendKeyEvent(false, keyCode, false, game)
-		end)
-		return sent == true
+
+		if type(keyrelease) == "function" then
+			table.insert(methods, function()
+				keyrelease(Enum.KeyCode.F)
+			end)
+			table.insert(methods, function()
+				keyrelease(0x46)
+			end)
+		end
+
+		for _, method in ipairs(methods) do
+			if pcall(method) then
+				return true
+			end
+		end
+		return false
 	end
 
-	local function scheduleAutoRelease(keyCode)
-		if not flag("Gakuran Auto Green", false) then
-			return
+	local function computeReleaseProgress()
+		local progress = PERFECT_PROGRESS
+		if flag("Gakuran Basketball Humanize", false) then
+			local jitter = math.clamp(tonumber(flag("Gakuran Basketball Jitter", 15)) or 15, 0, 100)
+			if jitter > 0 then
+				local spread = (jitter / 100) * 0.04
+				progress = math.clamp(PERFECT_PROGRESS + (math.random() * 2 - 1) * spread, 0.70, 0.82)
+			end
 		end
-		if not flag("Gakuran Basketball Auto Release", true) then
+		return progress
+	end
+
+	local function scheduleAutoRelease()
+		if not flag("Gakuran Basketball Auto Release", false) then
 			return
 		end
 		if not hasBasketballEquipped() then
@@ -417,32 +253,127 @@ return function(ctx)
 
 		bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
 		local token = bb.releaseToken
-		local delaySec = METER_DURATION * PERFECT_PROGRESS
 
+		-- Warm controller lookup while charging starts.
+		task.spawn(function()
+			findController(true)
+		end)
+
+		local delaySec = METER_DURATION * PERFECT_PROGRESS
 		if flag("Gakuran Basketball Humanize", false) then
 			local jitter = math.clamp(tonumber(flag("Gakuran Basketball Jitter", 15)) or 15, 0, 100)
 			local spread = (jitter / 100) * 0.03
 			delaySec = delaySec + ((math.random() * 2 - 1) * spread * METER_DURATION)
 		end
-		delaySec = math.clamp(delaySec, 0.40, METER_DURATION * 0.92)
+		delaySec = math.clamp(delaySec, 0.42, METER_DURATION * 0.92)
 
 		task.delay(delaySec, function()
 			if token ~= bb.releaseToken then
 				return
 			end
-			if ctx.state.unloading or not flag("Gakuran Auto Green", false) then
+			if ctx.state.unloading or not flag("Gakuran Basketball Auto Release", false) then
 				return
 			end
 			if not hasBasketballEquipped() then
 				return
 			end
-			-- Only key-up. Never fire the shoot remote here.
-			if sendKeyUp(keyCode) then
-				setStatus(string.format("auto-released @ %.0fms", delaySec * 1000))
-			else
-				setStatus("hold F ~0.50s (no VIM; hook still greens)")
+
+			local progress = computeReleaseProgress()
+			local released, reason = releaseShotOnController(progress)
+			if released then
+				setStatus(string.format("released @ %.0fms (%.2f)", delaySec * 1000, progress))
+				debugLog("controller _releaseShot", progress)
+				return
 			end
+
+			-- Fallback: synthetic key up (often no-ops on executors).
+			if tryKeyRelease() then
+				setStatus(string.format("key-release @ %.0fms (fallback)", delaySec * 1000))
+				debugLog("key release fallback", reason)
+				return
+			end
+
+			setStatus("auto-release failed: " .. tostring(reason))
+			debugLog("release failed", reason)
 		end)
+	end
+
+	-- Rim / ball discovery -----------------------------------------------
+
+	local function refreshRimCache(force)
+		local now = os.clock()
+		if not force and (now - bb.rimCacheAt) < 1.5 and #bb.rimCache > 0 then
+			return bb.rimCache
+		end
+
+		local rims = {}
+		local seen = {}
+
+		local function addRim(part)
+			if part and part:IsA("BasePart") and not seen[part] then
+				seen[part] = true
+				table.insert(rims, part)
+			end
+		end
+
+		-- Prefer structured paths first.
+		local hoops = Workspace:FindFirstChild("Hoops")
+		if hoops then
+			for _, child in ipairs(hoops:GetChildren()) do
+				local rim = child:FindFirstChild("Rim", true)
+				if rim then
+					addRim(rim)
+				end
+			end
+			for _, descendant in ipairs(hoops:GetDescendants()) do
+				if descendant.Name == "Rim" then
+					addRim(descendant)
+				end
+			end
+		end
+
+		-- Fallback: workspace scan (Hoops folder can report empty children while rims still exist).
+		if #rims == 0 then
+			for _, descendant in ipairs(Workspace:GetDescendants()) do
+				if descendant.Name == "Rim" and descendant:IsA("BasePart") then
+					local parent = descendant.Parent
+					if parent and (parent.Name == "Hoop" or parent.Name:find("Hoop") or parent.Name:find("Basket")) then
+						addRim(descendant)
+					elseif descendant:GetFullName():find("Hoops") then
+						addRim(descendant)
+					end
+				end
+			end
+		end
+
+		bb.rimCache = rims
+		bb.rimCacheAt = now
+		return rims
+	end
+
+	local function collectBalls()
+		local balls = {}
+		local items = Workspace:FindFirstChild("Items")
+		if items then
+			for _, model in ipairs(items:GetChildren()) do
+				if model.Name == "Basketball" or model.Name:lower():find("basket") then
+					table.insert(balls, model)
+				end
+			end
+		end
+
+		-- Held balls on characters.
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			if character then
+				local held = character:FindFirstChild("Basketball")
+				if held then
+					table.insert(balls, held)
+				end
+			end
+		end
+
+		return balls
 	end
 
 	-- ESP ----------------------------------------------------------------
@@ -452,59 +383,65 @@ return function(ctx)
 			bb.esp = { highlights = {}, billboards = {} }
 			return
 		end
-		if type(bb.esp.highlights) ~= "table" then
-			bb.esp.highlights = {}
-		end
-		if type(bb.esp.billboards) ~= "table" then
-			bb.esp.billboards = {}
-		end
+		bb.esp.highlights = type(bb.esp.highlights) == "table" and bb.esp.highlights or {}
+		bb.esp.billboards = type(bb.esp.billboards) == "table" and bb.esp.billboards or {}
 
-		for key, highlight in pairs(bb.esp.highlights) do
+		for key, instance in pairs(bb.esp.highlights) do
 			pcall(function()
-				highlight:Destroy()
+				instance:Destroy()
 			end)
 			bb.esp.highlights[key] = nil
 		end
-		for key, billboard in pairs(bb.esp.billboards) do
+		for key, instance in pairs(bb.esp.billboards) do
 			pcall(function()
-				billboard:Destroy()
+				instance:Destroy()
 			end)
 			bb.esp.billboards[key] = nil
 		end
 	end
 
 	local function ensureHighlight(key, adorn, color)
+		local parent = getEspParent()
+		if not parent or not adorn then
+			return nil
+		end
+
 		local existing = bb.esp.highlights[key]
 		if existing and existing.Parent then
+			existing.Adornee = adorn
 			existing.FillColor = color
 			existing.OutlineColor = color
-			existing.Adornee = adorn
 			existing.Enabled = true
 			return existing
 		end
 
 		local highlight = Instance.new("Highlight")
-		highlight.Name = "XanhubBasketballESP"
+		highlight.Name = "XanhubBballESP"
 		highlight.Adornee = adorn
 		highlight.FillColor = color
 		highlight.OutlineColor = color
-		highlight.FillTransparency = 0.65
-		highlight.OutlineTransparency = 0.1
+		highlight.FillTransparency = 0.55
+		highlight.OutlineTransparency = 0
 		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-		highlight.Parent = adorn
+		highlight.Parent = parent
 		bb.esp.highlights[key] = highlight
 		return highlight
 	end
 
 	local function ensureBillboard(key, adorn, text, color)
+		local parent = getEspParent()
+		if not parent or not adorn then
+			return nil
+		end
+
 		local gui = bb.esp.billboards[key]
 		if not (gui and gui.Parent) then
 			gui = Instance.new("BillboardGui")
-			gui.Name = "XanhubBasketballESPLabel"
+			gui.Name = "XanhubBballESPLabel"
 			gui.AlwaysOnTop = true
-			gui.Size = UDim2.fromOffset(140, 28)
-			gui.StudsOffset = Vector3.new(0, 2.2, 0)
-			gui.Parent = adorn
+			gui.Size = UDim2.fromOffset(150, 28)
+			gui.StudsOffset = Vector3.new(0, 2.4, 0)
+			gui.Parent = parent
 
 			local label = Instance.new("TextLabel")
 			label.Name = "Label"
@@ -512,7 +449,7 @@ return function(ctx)
 			label.Size = UDim2.fromScale(1, 1)
 			label.Font = Enum.Font.Code
 			label.TextSize = 13
-			label.TextStrokeTransparency = 0.4
+			label.TextStrokeTransparency = 0.35
 			label.Parent = gui
 			bb.esp.billboards[key] = gui
 		end
@@ -523,12 +460,15 @@ return function(ctx)
 			label.Text = text
 			label.TextColor3 = color
 		end
+		return gui
 	end
 
 	local function updateEsp()
-		if type(bb.esp) ~= "table" or type(bb.esp.highlights) ~= "table" then
+		if type(bb.esp) ~= "table" then
 			bb.esp = { highlights = {}, billboards = {} }
 		end
+		bb.esp.highlights = type(bb.esp.highlights) == "table" and bb.esp.highlights or {}
+		bb.esp.billboards = type(bb.esp.billboards) == "table" and bb.esp.billboards or {}
 
 		if not flag("Gakuran Basketball ESP", false) then
 			if next(bb.esp.highlights) or next(bb.esp.billboards) then
@@ -540,58 +480,87 @@ return function(ctx)
 		local root = ctx.getRoot()
 		local rootPos = root and root.Position
 		local seen = {}
+		local ballIndex = 0
+		local rimIndex = 0
 
 		if flag("Gakuran Basketball ESP Rims", true) then
-			local hoops = Workspace:FindFirstChild("Hoops")
-			if hoops then
-				for _, descendant in ipairs(hoops:GetDescendants()) do
-					if descendant.Name == "Rim" and descendant:IsA("BasePart") then
-						local key = "rim:" .. descendant:GetFullName()
-						seen[key] = true
-						local color = Color3.fromRGB(255, 140, 40)
-						ensureHighlight(key, descendant.Parent or descendant, color)
-						if flag("Gakuran Basketball ESP Distance", true) and rootPos then
-							local dist = (descendant.Position - rootPos).Magnitude
-							local labelKey = key .. ":label"
-							ensureBillboard(labelKey, descendant, string.format("Rim  %.0fst", dist), color)
-							seen[labelKey] = true
-						end
+			local rims = refreshRimCache(false)
+			local color = Color3.fromRGB(255, 140, 40)
+			if not bb.esp._rimKeys then
+				bb.esp._rimKeys = setmetatable({}, { __mode = "k" })
+			end
+
+			for _, rim in ipairs(rims) do
+				if rim.Parent then
+					rimIndex += 1
+					local key = bb.esp._rimKeys[rim]
+					if not key then
+						bb.esp._rimId = (bb.esp._rimId or 0) + 1
+						key = "rim:" .. bb.esp._rimId
+						bb.esp._rimKeys[rim] = key
+					end
+					seen[key] = true
+
+					local adorn = (rim.Parent and rim.Parent:IsA("Model") and rim.Parent) or rim
+					ensureHighlight(key, adorn, color)
+
+					if flag("Gakuran Basketball ESP Distance", true) and rootPos then
+						local lkey = key .. ":label"
+						seen[lkey] = true
+						local dist = (rim.Position - rootPos).Magnitude
+						ensureBillboard(lkey, rim, string.format("Rim  %.0fst", dist), color)
 					end
 				end
 			end
 		end
 
 		if flag("Gakuran Basketball ESP Balls", true) then
-			local items = Workspace:FindFirstChild("Items")
-			if items then
-				for _, model in ipairs(items:GetChildren()) do
-					if model.Name == "Basketball" then
-						local part = getRootPart(model)
-						if part then
-							local key = "ball:" .. model:GetFullName()
-							seen[key] = true
-							local color = Color3.fromRGB(255, 170, 60)
-							ensureHighlight(key, model, color)
-							if flag("Gakuran Basketball ESP Distance", true) and rootPos then
-								local dist = (part.Position - rootPos).Magnitude
-								local labelKey = key .. ":label"
-								ensureBillboard(labelKey, part, string.format("Ball  %.0fst", dist), color)
-								seen[labelKey] = true
-							end
-						end
-					end
-				end
+			local color = Color3.fromRGB(255, 170, 60)
+			local heldColor = Color3.fromRGB(80, 200, 255)
+			if not bb.esp._ballKeys then
+				bb.esp._ballKeys = setmetatable({}, { __mode = "k" })
 			end
 
-			for _, player in ipairs(Players:GetPlayers()) do
-				local character = player.Character
-				if character and character:GetAttribute("ItemEquipped") == "Basketball" then
-					local ballModel = character:FindFirstChild("Basketball")
-					local adorn = ballModel or character:FindFirstChild("HumanoidRootPart")
-					if adorn then
-						local key = "held:" .. tostring(player.UserId)
-						seen[key] = true
-						ensureHighlight(key, ballModel or character, Color3.fromRGB(80, 200, 255))
+			for _, ball in ipairs(collectBalls()) do
+				if ball.Parent then
+					ballIndex += 1
+					local key = bb.esp._ballKeys[ball]
+					if not key then
+						bb.esp._ballId = (bb.esp._ballId or 0) + 1
+						key = "ball:" .. bb.esp._ballId
+						bb.esp._ballKeys[ball] = key
+					end
+					seen[key] = true
+
+					local adorn = ball:IsA("Model") and ball
+						or (ball.Parent and ball.Parent:IsA("Model") and ball.Parent)
+						or ball
+
+					-- Floor balls under Workspace.Items; held balls under a character.
+					local playerOwner = nil
+					local parent = ball:IsA("Model") and ball or ball.Parent
+					while parent and parent ~= Workspace do
+						if parent:IsA("Model") then
+							playerOwner = Players:GetPlayerFromCharacter(parent)
+							if playerOwner then
+								break
+							end
+						end
+						parent = parent.Parent
+					end
+
+					local useColor = playerOwner and heldColor or color
+					ensureHighlight(key, adorn, useColor)
+
+					if flag("Gakuran Basketball ESP Distance", true) and rootPos then
+						local part = getRootPart(ball)
+						if part then
+							local lkey = key .. ":label"
+							seen[lkey] = true
+							local dist = (part.Position - rootPos).Magnitude
+							local tag = playerOwner and playerOwner.DisplayName or "Ball"
+							ensureBillboard(lkey, part, string.format("%s  %.0fst", tag, dist), useColor)
+						end
 					end
 				end
 			end
@@ -613,134 +582,95 @@ return function(ctx)
 				bb.esp.billboards[key] = nil
 			end
 		end
-	end
 
-	local function tryBypassDribbleCooldown()
-		if not flag("Gakuran No Dribble Cooldown", false) then
-			return
-		end
-		if type(getgc) ~= "function" then
-			return
-		end
-		local ok, objects = pcall(getgc, true)
-		if not ok or type(objects) ~= "table" then
-			return
-		end
-		for _, value in ipairs(objects) do
-			if type(value) == "table" then
-				local hasDribble = rawget(value, "_dribbleRemote") ~= nil
-				local hasLastZ = rawget(value, "_lastZTime") ~= nil
-				if hasDribble and hasLastZ then
-					value._lastZTime = 0
-					value._lastCTime = 0
-				end
-			end
+		if flag("Gakuran Basketball Debug", false) then
+			setStatus(string.format("esp balls=%d rims=%d", ballIndex, #refreshRimCache(false)))
 		end
 	end
 
 	-- Setup --------------------------------------------------------------
 
 	local function setup()
-		getBasketballModule()
-		installShootHook()
-
-		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-		if remotes then
-			ctx.addConnection(remotes.ChildAdded, function(child)
-				if child.Name == "BasketballShoot" then
-					bb.shootRemote = child
-					bb.hookInstalled = false
-					installShootHook()
-				end
-			end)
-		end
-
 		ctx.addConnection(UserInputService.InputBegan, function(input, gameProcessed)
 			if gameProcessed or ctx.state.unloading then
 				return
 			end
-
-			if input.KeyCode == Enum.KeyCode.F and hasBasketballEquipped() then
-				getBasketballModule()
-				refreshCachedOffset()
-				scheduleAutoRelease(Enum.KeyCode.F)
+			if input.KeyCode ~= Enum.KeyCode.F then
+				return
 			end
-
-			if flag("Gakuran No Dribble Cooldown", false) then
-				if
-					input.KeyCode == Enum.KeyCode.Z
-					or input.KeyCode == Enum.KeyCode.C
-					or input.KeyCode == Enum.KeyCode.X
-				then
-					tryBypassDribbleCooldown()
-				end
+			if not hasBasketballEquipped() then
+				return
 			end
+			if not flag("Gakuran Basketball Auto Release", false) then
+				return
+			end
+			scheduleAutoRelease()
 		end)
 
 		ctx.addConnection(UserInputService.InputEnded, function(input)
 			if input.KeyCode == Enum.KeyCode.F then
+				-- User released manually — cancel pending auto-release.
 				bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
 			end
 		end)
 
-		local espAccum = 0
-		local cacheAccum = 0
-		local dribbleAccum = 0
+		-- Re-find controller when ball is equipped.
+		local function onCharacter(character)
+			if not character then
+				return
+			end
+			character:GetAttributeChangedSignal("ItemEquipped"):Connect(function()
+				if character:GetAttribute("ItemEquipped") == "Basketball" then
+					task.defer(function()
+						findController(true)
+					end)
+				end
+			end)
+			character:GetAttributeChangedSignal("ItemPhase"):Connect(function()
+				if hasBasketballEquipped(character) then
+					task.defer(function()
+						findController(true)
+					end)
+				end
+			end)
+		end
 
+		if LocalPlayer.Character then
+			onCharacter(LocalPlayer.Character)
+		end
+		ctx.addConnection(LocalPlayer.CharacterAdded, onCharacter)
+
+		local espAccum = 0
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
 				return
 			end
 
-			-- Keep green offset fresh for the hook (never computed inside namecall).
-			if flag("Gakuran Auto Green", false) and hasBasketballEquipped() then
-				cacheAccum = cacheAccum + dt
-				if cacheAccum >= 0.1 then
-					cacheAccum = 0
-					refreshCachedOffset()
-				end
-			end
-
 			if flag("Gakuran Basketball ESP", false) then
-				espAccum = espAccum + dt
-				if espAccum >= 0.25 then
+				espAccum += dt
+				if espAccum >= 0.3 then
 					espAccum = 0
 					local ok, err = pcall(updateEsp)
 					if not ok then
 						debugLog("esp error", err)
 					end
 				end
-			else
-				if type(bb.esp) == "table" and type(bb.esp.highlights) == "table" then
-					if next(bb.esp.highlights) or next(bb.esp.billboards) then
-						clearEsp()
-					end
-				end
-			end
-
-			if flag("Gakuran No Dribble Cooldown", false) then
-				dribbleAccum = dribbleAccum + dt
-				if dribbleAccum >= 0.15 then
-					dribbleAccum = 0
-					pcall(tryBypassDribbleCooldown)
-				end
-			end
-
-			if flag("Gakuran Auto Green", false) and not bb.hookInstalled then
-				installShootHook()
+			elseif type(bb.esp.highlights) == "table" and (next(bb.esp.highlights) or next(bb.esp.billboards)) then
+				clearEsp()
 			end
 		end)
 
-		if flag("Gakuran Auto Green", false) then
-			setStatus(bb.hookInstalled and ("ready · " .. tostring(bb.hookKind)) or "waiting for hook")
-		else
-			setStatus("idle")
-		end
+		-- Warm rim cache once.
+		task.defer(function()
+			refreshRimCache(true)
+			setStatus(string.format("idle · rims cached=%d", #bb.rimCache))
+		end)
 	end
 
 	library:AddCleanup(function()
 		bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
 		pcall(clearEsp)
+		bb.controller = nil
 	end)
 
 	return { setup = setup }
