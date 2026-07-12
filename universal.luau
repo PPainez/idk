@@ -42,7 +42,7 @@ end
 local library = acquireLibrary()
 library:SetTitle("xanhub | Universal")
 library:SetAccent(Color3.fromRGB(0, 170, 255))
-library:SetTweening(false)
+library:SetTweening(true)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -575,11 +575,29 @@ end
 
 local espSection = visualsLeft:AddSection("Player ESP")
 espSection:AddToggle({text = "Enabled", flag = "Universal ESP", state = false})
-espSection:AddToggle({text = "Highlights", flag = "Universal ESP Highlights", state = true})
+espSection:AddToggle({text = "Highlights", flag = "Universal ESP Highlights", state = false})
 espSection:AddToggle({text = "Names", flag = "Universal ESP Names", state = true})
 espSection:AddToggle({text = "Health Bar", flag = "Universal ESP Health", state = true})
 espSection:AddToggle({text = "Distance", flag = "Universal ESP Distance", state = true})
 espSection:AddToggle({text = "Team Check", flag = "Universal ESP Team Check", state = false})
+espSection:AddSlider({
+    text = "ESP Scale",
+    flag = "Universal ESP Scale",
+    min = 50,
+    max = 110,
+    value = 78,
+    float = 1,
+    suffix = "%",
+})
+espSection:AddSlider({
+    text = "Fade Start",
+    flag = "Universal ESP Fade Start",
+    min = 50,
+    max = 1200,
+    value = 250,
+    float = 10,
+    suffix = " studs",
+})
 espSection:AddSlider({
     text = "Maximum Distance",
     flag = "Universal ESP Max Distance",
@@ -605,66 +623,88 @@ local function setupESPRuntime()
         if not entry then
             return
         end
-        for _, object in pairs(entry) do
-            if typeof(object) == "Instance" then
-                pcall(function()
-                    object:Destroy()
-                end)
-            end
+
+        if entry.highlight then
+            pcall(function()
+                entry.highlight:Destroy()
+            end)
         end
+
+        if entry.billboard then
+            pcall(function()
+                entry.billboard:Destroy()
+            end)
+        end
+
         state.esp[player] = nil
     end
 
     local function createEntry(player, character)
         destroyEntry(player)
 
+        local root = character:FindFirstChild("HumanoidRootPart")
+            or character:FindFirstChild("UpperTorso")
+            or character:FindFirstChild("Torso")
+            or character:FindFirstChild("Head")
+
+        if not root then
+            return nil
+        end
+
         local highlight = Instance.new("Highlight")
         highlight.Name = "xanhub_universal_highlight"
         highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlight.FillTransparency = 0.78
-        highlight.OutlineTransparency = 0.12
+        highlight.FillTransparency = 0.92
+        highlight.OutlineTransparency = 0.28
         highlight.Adornee = character
+        highlight.Enabled = false
         highlight.Parent = character
-
-        local root = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Head")
-        if not root then
-            highlight:Destroy()
-            return nil
-        end
 
         local billboard = Instance.new("BillboardGui")
         billboard.Name = "xanhub_universal_billboard"
         billboard.Adornee = root
         billboard.AlwaysOnTop = true
         billboard.LightInfluence = 0
-        billboard.MaxDistance = 3000
-        billboard.Size = UDim2.fromOffset(180, 54)
-        billboard.StudsOffsetWorldSpace = Vector3.new(0, 3.7, 0)
+        billboard.MaxDistance = 2000
+        billboard.Size = UDim2.fromOffset(156, 38)
+        billboard.StudsOffsetWorldSpace = Vector3.new(0, 3.15, 0)
+        billboard.Enabled = false
         billboard.Parent = character
 
         local card = Instance.new("Frame")
         card.AnchorPoint = Vector2.new(0.5, 0.5)
         card.Position = UDim2.fromScale(0.5, 0.5)
-        card.Size = UDim2.fromOffset(170, 46)
-        card.BackgroundColor3 = Color3.fromRGB(9, 12, 18)
-        card.BackgroundTransparency = 0.16
+        card.Size = UDim2.fromOffset(150, 34)
+        card.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
+        card.BackgroundTransparency = 0.18
         card.BorderSizePixel = 0
+        card.ClipsDescendants = true
         card.Parent = billboard
-        createRounded(card, 7)
+        createRounded(card, 6)
+
+        local scale = Instance.new("UIScale")
+        scale.Scale = 0.78
+        scale.Parent = card
 
         local stroke = Instance.new("UIStroke")
         stroke.Color = Color3.fromRGB(0, 170, 255)
-        stroke.Transparency = 0.22
+        stroke.Transparency = 0.28
         stroke.Thickness = 1
         stroke.Parent = card
 
+        local accent = Instance.new("Frame")
+        accent.Size = UDim2.new(0, 2, 1, 0)
+        accent.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+        accent.BorderSizePixel = 0
+        accent.Parent = card
+
         local nameLabel = Instance.new("TextLabel")
-        nameLabel.Position = UDim2.fromOffset(9, 4)
-        nameLabel.Size = UDim2.new(1, -18, 0, 18)
+        nameLabel.Position = UDim2.fromOffset(8, 3)
+        nameLabel.Size = UDim2.new(1, -52, 0, 15)
         nameLabel.BackgroundTransparency = 1
         nameLabel.Text = player.DisplayName
         nameLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
-        nameLabel.TextSize = 13
+        nameLabel.TextSize = 12
         nameLabel.Font = Enum.Font.Code
         nameLabel.TextXAlignment = Enum.TextXAlignment.Left
         nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -672,55 +712,79 @@ local function setupESPRuntime()
 
         local distanceLabel = Instance.new("TextLabel")
         distanceLabel.AnchorPoint = Vector2.new(1, 0)
-        distanceLabel.Position = UDim2.new(1, -9, 0, 4)
-        distanceLabel.Size = UDim2.fromOffset(58, 18)
+        distanceLabel.Position = UDim2.new(1, -7, 0, 3)
+        distanceLabel.Size = UDim2.fromOffset(42, 15)
         distanceLabel.BackgroundTransparency = 1
         distanceLabel.Text = "0m"
-        distanceLabel.TextColor3 = Color3.fromRGB(150, 160, 180)
-        distanceLabel.TextSize = 11
+        distanceLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
+        distanceLabel.TextSize = 10
         distanceLabel.Font = Enum.Font.Code
         distanceLabel.TextXAlignment = Enum.TextXAlignment.Right
         distanceLabel.Parent = card
 
         local barBackground = Instance.new("Frame")
-        barBackground.Position = UDim2.fromOffset(9, 30)
-        barBackground.Size = UDim2.new(1, -18, 0, 7)
-        barBackground.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+        barBackground.Position = UDim2.fromOffset(8, 25)
+        barBackground.Size = UDim2.new(1, -16, 0, 3)
+        barBackground.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
         barBackground.BorderSizePixel = 0
         barBackground.Parent = card
-        createRounded(barBackground, 4)
+        createRounded(barBackground, 2)
 
         local healthFill = Instance.new("Frame")
         healthFill.Size = UDim2.fromScale(1, 1)
         healthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
         healthFill.BorderSizePixel = 0
         healthFill.Parent = barBackground
-        createRounded(healthFill, 4)
+        createRounded(healthFill, 2)
 
         local entry = {
             character = character,
+            root = root,
             highlight = highlight,
             billboard = billboard,
+            scale = scale,
             card = card,
             stroke = stroke,
+            accent = accent,
             name = nameLabel,
             distance = distanceLabel,
             healthBackground = barBackground,
             health = healthFill,
+            currentScale = 0.78,
+            displayedHealth = 1,
         }
+
         state.esp[player] = entry
         return entry
     end
 
     local function setVisible(entry, visible)
-        if entry.highlight then entry.highlight.Enabled = visible and library.flags["Universal ESP Highlights"] == true end
-        if entry.billboard then entry.billboard.Enabled = visible end
+        if entry.highlight then
+            entry.highlight.Enabled = visible and library.flags["Universal ESP Highlights"] == true
+        end
+        if entry.billboard then
+            entry.billboard.Enabled = visible
+        end
     end
 
     local function update()
+        if state.unloading then
+            return
+        end
+
         local enabled = library.flags["Universal ESP"] == true
         local localRoot = getRoot()
-        local maxDistance = tonumber(library.flags["Universal ESP Max Distance"]) or 650
+        local maxDistance = math.max(50, tonumber(library.flags["Universal ESP Max Distance"]) or 650)
+        local fadeStart = math.clamp(
+            tonumber(library.flags["Universal ESP Fade Start"]) or 250,
+            0,
+            maxDistance - 1
+        )
+        local baseScale = math.clamp(
+            (tonumber(library.flags["Universal ESP Scale"]) or 78) / 100,
+            0.5,
+            1.1
+        )
         local color = typeof(library.flags["Universal ESP Color"]) == "Color3"
             and library.flags["Universal ESP Color"]
             or Color3.fromRGB(0, 170, 255)
@@ -733,7 +797,7 @@ local function setupESPRuntime()
                 local entry = state.esp[player]
 
                 if character and root and humanoid and humanoid.Health > 0 then
-                    if not entry or entry.character ~= character then
+                    if not entry or entry.character ~= character or entry.root ~= root then
                         entry = createEntry(player, character)
                     end
                 elseif entry then
@@ -742,7 +806,7 @@ local function setupESPRuntime()
                 end
 
                 if entry then
-                    local sameTeam = library.flags["Universal ESP Team Check"]
+                    local sameTeam = library.flags["Universal ESP Team Check"] == true
                         and LocalPlayer.Team ~= nil
                         and player.Team == LocalPlayer.Team
                     local distance = localRoot and (localRoot.Position - root.Position).Magnitude or math.huge
@@ -750,26 +814,48 @@ local function setupESPRuntime()
                     setVisible(entry, visible)
 
                     if visible then
+                        local fade = math.clamp((distance - fadeStart) / math.max(1, maxDistance - fadeStart), 0, 1)
+                        local opacity = 1 - (fade * 0.72)
+                        local distanceScale = math.clamp(1 - (distance / maxDistance) * 0.64, 0.34, 1)
+                        local wantedScale = baseScale * distanceScale
+                        entry.currentScale += (wantedScale - entry.currentScale) * 0.24
+                        entry.scale.Scale = entry.currentScale
+                        entry.billboard.MaxDistance = maxDistance
+
                         entry.highlight.FillColor = color
                         entry.highlight.OutlineColor = color
+                        entry.highlight.FillTransparency = 0.92 + fade * 0.06
+                        entry.highlight.OutlineTransparency = 0.28 + fade * 0.55
+
                         entry.stroke.Color = color
+                        entry.stroke.Transparency = 0.28 + fade * 0.52
+                        entry.accent.BackgroundColor3 = color
+                        entry.accent.BackgroundTransparency = 1 - opacity
+                        entry.card.BackgroundTransparency = 0.18 + fade * 0.58
+                        entry.name.TextTransparency = 1 - opacity
+                        entry.distance.TextTransparency = 1 - opacity
+                        entry.healthBackground.BackgroundTransparency = 0.08 + fade * 0.66
+                        entry.health.BackgroundTransparency = 1 - opacity
+
+                        entry.name.Text = player.DisplayName
                         entry.name.Visible = library.flags["Universal ESP Names"] == true
                         entry.distance.Visible = library.flags["Universal ESP Distance"] == true
                         entry.healthBackground.Visible = library.flags["Universal ESP Health"] == true
                         entry.distance.Text = tostring(math.floor(distance + 0.5)) .. "m"
 
                         local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
-                        entry.health.BackgroundColor3 = Color3.fromHSV(ratio * 0.33, 0.78, 1)
-                        tween(entry.health, {Size = UDim2.new(ratio, 0, 1, 0)}, 0.12)
+                        entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
+                        entry.health.Size = UDim2.new(entry.displayedHealth, 0, 1, 0)
+                        entry.health.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
                     end
                 end
             end
         end
     end
 
-    updateConnection = addConnection(RunService.Heartbeat, function(deltaTime)
+    updateConnection = addConnection(RunService.RenderStepped, function(deltaTime)
         accumulator += deltaTime
-        if accumulator >= 0.1 then
+        if accumulator >= 1 / 30 then
             accumulator = 0
             update()
         end
@@ -791,11 +877,11 @@ local function setupESPRuntime()
     library:AddCleanup(function()
         disconnect(updateConnection)
         disconnect(playerRemovingConnection)
-        local players = {}
+        local playersToRemove = {}
         for player in pairs(state.esp) do
-            table.insert(players, player)
+            table.insert(playersToRemove, player)
         end
-        for _, player in ipairs(players) do
+        for _, player in ipairs(playersToRemove) do
             destroyEntry(player)
         end
     end)
@@ -818,6 +904,43 @@ localVisuals:AddSlider({text = "Crosshair Gap", flag = "Universal Crosshair Gap"
 localVisuals:AddColor({text = "Crosshair Color", flag = "Universal Crosshair Color", color = Color3.fromRGB(0, 170, 255)})
 localVisuals:AddToggle({text = "Coordinates", flag = "Universal Coordinates", state = false})
 
+local aimPreview = visualsRight:AddSection("Target Preview")
+aimPreview:AddToggle({text = "Enabled", flag = "Universal Aim Preview", state = false})
+aimPreview:AddToggle({text = "Lock Preview Target", flag = "Universal Aim Lock Preview", state = false})
+aimPreview:AddToggle({text = "Show FOV Circle", flag = "Universal Aim Show FOV", state = true})
+aimPreview:AddToggle({text = "Show Target Line", flag = "Universal Aim Show Line", state = true})
+aimPreview:AddToggle({text = "Team Check", flag = "Universal Aim Team Check", state = true})
+aimPreview:AddList({
+    text = "Target Part",
+    flag = "Universal Aim Part",
+    values = {"Head", "Torso"},
+    value = "Head",
+})
+aimPreview:AddSlider({
+    text = "FOV Radius",
+    flag = "Universal Aim FOV",
+    min = 40,
+    max = 400,
+    value = 140,
+    float = 5,
+    suffix = " px",
+})
+aimPreview:AddSlider({
+    text = "Maximum Distance",
+    flag = "Universal Aim Max Distance",
+    min = 50,
+    max = 1500,
+    value = 500,
+    float = 10,
+    suffix = " studs",
+})
+aimPreview:AddColor({
+    text = "Indicator Color",
+    flag = "Universal Aim Color",
+    color = Color3.fromRGB(0, 170, 255),
+})
+aimPreview:AddLabel("Visual target preview only; it never moves your camera or input")
+
 local function setupOverlayRuntime()
     local renderConnection
     local root = createOverlayRoot()
@@ -837,24 +960,170 @@ local function setupOverlayRuntime()
     local coordinates = Instance.new("TextLabel")
     coordinates.AnchorPoint = Vector2.new(0.5, 1)
     coordinates.Position = UDim2.new(0.5, 0, 1, -22)
-    coordinates.Size = UDim2.fromOffset(360, 28)
-    coordinates.BackgroundColor3 = Color3.fromRGB(9, 12, 18)
-    coordinates.BackgroundTransparency = 0.18
+    coordinates.Size = UDim2.fromOffset(330, 26)
+    coordinates.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
+    coordinates.BackgroundTransparency = 0.16
     coordinates.BorderSizePixel = 0
     coordinates.TextColor3 = Color3.fromRGB(235, 240, 250)
-    coordinates.TextSize = 13
+    coordinates.TextSize = 12
     coordinates.Font = Enum.Font.Code
     coordinates.Visible = false
     coordinates.ZIndex = 510
     coordinates.Parent = root
     createRounded(coordinates, 7)
 
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 170, 255)
-    stroke.Transparency = 0.35
-    stroke.Parent = coordinates
+    local coordinatesStroke = Instance.new("UIStroke")
+    coordinatesStroke.Color = Color3.fromRGB(0, 170, 255)
+    coordinatesStroke.Transparency = 0.38
+    coordinatesStroke.Parent = coordinates
+
+    local fovCircle = Instance.new("Frame")
+    fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+    fovCircle.BackgroundTransparency = 1
+    fovCircle.BorderSizePixel = 0
+    fovCircle.Visible = false
+    fovCircle.ZIndex = 505
+    fovCircle.Parent = root
+    createRounded(fovCircle, 999)
+
+    local fovStroke = Instance.new("UIStroke")
+    fovStroke.Thickness = 1
+    fovStroke.Transparency = 0.34
+    fovStroke.Color = Color3.fromRGB(0, 170, 255)
+    fovStroke.Parent = fovCircle
+
+    local targetDot = Instance.new("Frame")
+    targetDot.AnchorPoint = Vector2.new(0.5, 0.5)
+    targetDot.Size = UDim2.fromOffset(10, 10)
+    targetDot.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+    targetDot.BorderSizePixel = 0
+    targetDot.Visible = false
+    targetDot.ZIndex = 515
+    targetDot.Parent = root
+    createRounded(targetDot, 999)
+
+    local targetDotStroke = Instance.new("UIStroke")
+    targetDotStroke.Color = Color3.fromRGB(6, 8, 12)
+    targetDotStroke.Thickness = 2
+    targetDotStroke.Transparency = 0.1
+    targetDotStroke.Parent = targetDot
+
+    local targetLabel = Instance.new("TextLabel")
+    targetLabel.AnchorPoint = Vector2.new(0.5, 1)
+    targetLabel.Size = UDim2.fromOffset(170, 22)
+    targetLabel.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
+    targetLabel.BackgroundTransparency = 0.18
+    targetLabel.BorderSizePixel = 0
+    targetLabel.Text = ""
+    targetLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
+    targetLabel.TextSize = 11
+    targetLabel.Font = Enum.Font.Code
+    targetLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    targetLabel.Visible = false
+    targetLabel.ZIndex = 515
+    targetLabel.Parent = root
+    createRounded(targetLabel, 6)
+
+    local targetLabelStroke = Instance.new("UIStroke")
+    targetLabelStroke.Thickness = 1
+    targetLabelStroke.Transparency = 0.35
+    targetLabelStroke.Color = Color3.fromRGB(0, 170, 255)
+    targetLabelStroke.Parent = targetLabel
+
+    local targetLine = Instance.new("Frame")
+    targetLine.AnchorPoint = Vector2.new(0.5, 0.5)
+    targetLine.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+    targetLine.BackgroundTransparency = 0.35
+    targetLine.BorderSizePixel = 0
+    targetLine.Visible = false
+    targetLine.ZIndex = 506
+    targetLine.Parent = root
+
+    local function setScreenLine(frame, from, to, thickness)
+        local delta = to - from
+        local length = delta.Magnitude
+        local midpoint = from + delta / 2
+        frame.Position = UDim2.fromOffset(midpoint.X, midpoint.Y)
+        frame.Size = UDim2.fromOffset(length, thickness or 1)
+        frame.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+    end
+
+    local function getTargetPart(character)
+        if not character then
+            return nil
+        end
+
+        if library.flags["Universal Aim Part"] == "Torso" then
+            return character:FindFirstChild("UpperTorso")
+                or character:FindFirstChild("Torso")
+                or character:FindFirstChild("HumanoidRootPart")
+        end
+
+        return character:FindFirstChild("Head")
+            or character:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function targetValid(player, camera, localRoot, center, radius, maxDistance)
+        if not player or player == LocalPlayer then
+            return nil
+        end
+
+        local character = player.Character
+        local humanoid = getHumanoid(character)
+        local targetPart = getTargetPart(character)
+        local targetRoot = getRoot(character)
+
+        if not character or not humanoid or humanoid.Health <= 0 or not targetPart or not targetRoot then
+            return nil
+        end
+
+        if library.flags["Universal Aim Team Check"] == true
+            and LocalPlayer.Team ~= nil
+            and player.Team == LocalPlayer.Team then
+            return nil
+        end
+
+        local worldDistance = localRoot and (localRoot.Position - targetRoot.Position).Magnitude or math.huge
+        if worldDistance > maxDistance then
+            return nil
+        end
+
+        local point, onScreen = camera:WorldToViewportPoint(targetPart.Position)
+        if not onScreen or point.Z <= 0 then
+            return nil
+        end
+
+        local screenPoint = Vector2.new(point.X, point.Y)
+        local screenDistance = (screenPoint - center).Magnitude
+        if screenDistance > radius then
+            return nil
+        end
+
+        return {
+            player = player,
+            part = targetPart,
+            point = screenPoint,
+            screenDistance = screenDistance,
+            worldDistance = worldDistance,
+        }
+    end
+
+    local function findNearestTarget(camera, localRoot, center, radius, maxDistance)
+        local best
+        for _, player in ipairs(Players:GetPlayers()) do
+            local candidate = targetValid(player, camera, localRoot, center, radius, maxDistance)
+            if candidate and (not best or candidate.screenDistance < best.screenDistance) then
+                best = candidate
+            end
+        end
+        return best
+    end
 
     renderConnection = addConnection(RunService.RenderStepped, function()
+        if state.unloading then
+            return
+        end
+
         local camera = Workspace.CurrentCamera
         if not camera then
             return
@@ -862,18 +1131,18 @@ local function setupOverlayRuntime()
 
         camera.FieldOfView = tonumber(library.flags["Universal FOV"]) or 70
 
-        local showCrosshair = library.flags["Universal Crosshair"] == true
         local viewport = camera.ViewportSize
         local center = viewport / 2
+        local showCrosshair = library.flags["Universal Crosshair"] == true
         local size = tonumber(library.flags["Universal Crosshair Size"]) or 9
         local gap = tonumber(library.flags["Universal Crosshair Gap"]) or 4
-        local color = typeof(library.flags["Universal Crosshair Color"]) == "Color3"
+        local crosshairColor = typeof(library.flags["Universal Crosshair Color"]) == "Color3"
             and library.flags["Universal Crosshair Color"]
             or Color3.fromRGB(0, 170, 255)
 
         for _, line in ipairs(crosshair) do
             line.Visible = showCrosshair
-            line.BackgroundColor3 = color
+            line.BackgroundColor3 = crosshairColor
         end
 
         if showCrosshair then
@@ -902,13 +1171,79 @@ local function setupOverlayRuntime()
                 coordinates.Text = "Position unavailable"
             end
         end
+
+        local previewEnabled = library.flags["Universal Aim Preview"] == true
+        local radius = math.max(20, tonumber(library.flags["Universal Aim FOV"]) or 140)
+        local maxDistance = math.max(50, tonumber(library.flags["Universal Aim Max Distance"]) or 500)
+        local previewColor = typeof(library.flags["Universal Aim Color"]) == "Color3"
+            and library.flags["Universal Aim Color"]
+            or Color3.fromRGB(0, 170, 255)
+
+        fovCircle.Position = UDim2.fromOffset(center.X, center.Y)
+        fovCircle.Size = UDim2.fromOffset(radius * 2, radius * 2)
+        fovCircle.Visible = previewEnabled and library.flags["Universal Aim Show FOV"] == true
+        fovStroke.Color = previewColor
+        targetDot.BackgroundColor3 = previewColor
+        targetLine.BackgroundColor3 = previewColor
+        targetLabelStroke.Color = previewColor
+
+        if not previewEnabled then
+            state.aimTarget = nil
+            targetDot.Visible = false
+            targetLabel.Visible = false
+            targetLine.Visible = false
+            return
+        end
+
+        local localRoot = getRoot()
+        local locked = library.flags["Universal Aim Lock Preview"] == true
+        local target
+
+        if locked and state.aimTarget then
+            target = targetValid(state.aimTarget, camera, localRoot, center, radius, maxDistance)
+        end
+
+        if not target then
+            target = findNearestTarget(camera, localRoot, center, radius, maxDistance)
+            state.aimTarget = target and target.player or nil
+        elseif not locked then
+            state.aimTarget = target.player
+        end
+
+        if target then
+            targetDot.Position = UDim2.fromOffset(target.point.X, target.point.Y)
+            targetDot.Visible = true
+            targetLabel.Position = UDim2.fromOffset(target.point.X, target.point.Y - 10)
+            targetLabel.Text = string.format(
+                "%s  •  %dm",
+                target.player.DisplayName,
+                math.floor(target.worldDistance + 0.5)
+            )
+            targetLabel.Visible = true
+
+            if library.flags["Universal Aim Show Line"] == true then
+                setScreenLine(targetLine, center, target.point, 1)
+                targetLine.Visible = true
+            else
+                targetLine.Visible = false
+            end
+        else
+            targetDot.Visible = false
+            targetLabel.Visible = false
+            targetLine.Visible = false
+        end
     end)
 
     state.overlays.coordinates = coordinates
     state.overlays.crosshair = crosshair
+    state.overlays.fovCircle = fovCircle
+    state.overlays.targetDot = targetDot
+    state.overlays.targetLabel = targetLabel
+    state.overlays.targetLine = targetLine
 
     library:AddCleanup(function()
         disconnect(renderConnection)
+        state.aimTarget = nil
         pcall(function()
             root:Destroy()
         end)
@@ -1228,6 +1563,29 @@ visualBinds:AddBind({
         setToggle("Universal Crosshair", enabled == true)
     end,
 })
+visualBinds:AddBind({
+    text = "Toggle Target Preview",
+    flag = "Universal Bind Aim Preview",
+    key = "V",
+    mode = "toggle",
+    nomouse = true,
+    callback = function(enabled)
+        setToggle("Universal Aim Preview", enabled == true)
+    end,
+})
+visualBinds:AddBind({
+    text = "Lock Preview Target",
+    flag = "Universal Bind Aim Lock",
+    key = "Q",
+    mode = "toggle",
+    nomouse = true,
+    callback = function(enabled)
+        setToggle("Universal Aim Lock Preview", enabled == true)
+        if not enabled then
+            state.aimTarget = nil
+        end
+    end,
+})
 visualBinds:AddLabel("Menu and panic binds are available in Settings")
 
 -- Initialize -----------------------------------------------------------------
@@ -1251,6 +1609,18 @@ library:AddCleanup(function()
     if type(runtime) == "table" then
         runtime.unloading = true
     end
+
+    for _, flag in ipairs({
+        "Universal ESP",
+        "Universal ESP Highlights",
+        "Universal Crosshair",
+        "Universal Coordinates",
+        "Universal Aim Preview",
+        "Universal Aim Lock Preview",
+    }) do
+        library.flags[flag] = false
+    end
+    state.aimTarget = nil
 
     local camera = Workspace.CurrentCamera
     if camera then
