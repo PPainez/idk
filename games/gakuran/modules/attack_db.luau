@@ -45,6 +45,8 @@ local LOCOMOTION_IDS = {
 	["111699625251889"] = true, -- Wrestling Walk
 	["91658474738843"] = true, -- Wrestling Walk alt
 	["135133599113049"] = true, -- Boxing Walk
+	["132695766056641"] = true, -- Boxing Idle
+	["136970699228453"] = true, -- Boxing BlockHit
 	["130267921858674"] = true, -- Karate Walk
 	["78370245490631"] = true, -- default Walk
 	["113331696487725"] = true, -- Basic Walk
@@ -246,12 +248,14 @@ local SEED = {
 	["83730275893449"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
 	["106980660082799"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
 	["78888626472394"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
-	-- Boxing
-	["137980914350618"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
-	["100408082509740"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
-	["94803478352691"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
-	["78695517680318"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
-	["132022052139564"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
+	-- Boxing (Combat.BoxingAnims — style M1HitboxDelay≈0.32, M2≈0.43)
+	["137980914350618"] = { name = "1stM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 1
+	["100408082509740"] = { name = "2ndM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 2
+	["94803478352691"] = { name = "3rdM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 3
+	["78695517680318"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 }, -- Boxing 4 (+offset)
+	["132022052139564"] = { name = "M2", kind = "M2", hitDelay = 0.43, window = 0.125 }, -- Boxing M2
+	-- Boxing non-attacks (also harvested; kept hard so remotes never false-positive)
+	-- Idle 132695766056641, Walk 135133599113049, Blocking 118147060185189, BlockHit 136970699228453
 	-- Capoeira
 	["125976167173936"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
 	["134945199381140"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
