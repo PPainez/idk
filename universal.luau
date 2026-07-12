@@ -1024,6 +1024,87 @@ targetingLockSection:AddColor({
 local targetingStatus = targetingLockSection:AddLabel("Target: none")
 targetingLockSection:AddLabel("Targeting only selects and marks an ESP target")
 
+-- NEW: Combat Aim Settings
+local combatAimSection = combatRight:AddSection("Combat Aim")
+combatAimSection:AddToggle({
+    text = "Aim Lock (Camera Track)",
+    flag = "Universal Combat Aim Lock",
+    state = false,
+})
+combatAimSection:AddToggle({
+    text = "Silent Aim",
+    flag = "Universal Combat Silent Aim",
+    state = false,
+})
+combatAimSection:AddSlider({
+    text = "Smoothness",
+    flag = "Universal Combat Smoothness",
+    min = 1,
+    max = 25,
+    value = 6,
+    float = 0.5,
+})
+combatAimSection:AddSlider({
+    text = "Prediction",
+    flag = "Universal Combat Prediction",
+    min = 0,
+    max = 2.5,
+    value = 1.1,
+    float = 0.05,
+})
+combatAimSection:AddToggle({
+    text = "Lock Only (No Auto Switch)",
+    flag = "Universal Combat Lock Only",
+    state = false,
+})
+
+local function setupCombatRuntime()
+    local aimConnection
+
+    local function getTargetPart(character)
+        if not character then return nil end
+        if library.flags["Universal Aim Part"] == "Torso" then
+            return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") or character:FindFirstChild("HumanoidRootPart")
+        end
+        return character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+    end
+
+    aimConnection = addConnection(RunService.RenderStepped, function()
+        if state.unloading then return end
+
+        local lockEnabled = library.flags["Universal Combat Aim Lock"] == true
+        local silentEnabled = library.flags["Universal Combat Silent Aim"] == true
+
+        if not lockEnabled and not silentEnabled then return end
+
+        local targetPlayer = state.aimTarget
+        if not targetPlayer then return end
+
+        local character = targetPlayer.Character
+        local targetPart = getTargetPart(character)
+        local root = getRoot(character)
+
+        if not targetPart or not root then return end
+
+        local prediction = tonumber(library.flags["Universal Combat Prediction"]) or 1.1
+        local vel = root.AssemblyLinearVelocity or Vector3.zero
+        local predictedPos = targetPart.Position + vel * prediction * (1/60)
+
+        local smoothness = tonumber(library.flags["Universal Combat Smoothness"]) or 6
+
+        if lockEnabled then
+            local cam = Workspace.CurrentCamera
+            local currentCF = cam.CFrame
+            local targetCF = CFrame.lookAt(currentCF.Position, predictedPos)
+            cam.CFrame = currentCF:Lerp(targetCF, 1 / smoothness)
+        end
+    end)
+
+    library:AddCleanup(function()
+        disconnect(aimConnection)
+    end)
+end
+
 local function setupOverlayRuntime()
     local renderConnection
     local root = createOverlayRoot()
@@ -1694,6 +1775,7 @@ setupESPRuntime()
 setupOverlayRuntime()
 setupWorldRuntime()
 setupUtilityRuntime()
+setupCombatRuntime()  -- NEW
 
 state.original.cameraFov = Workspace.CurrentCamera and Workspace.CurrentCamera.FieldOfView or 70
 
@@ -1736,7 +1818,7 @@ end)
 library:SetOpen(true)
 library:selectTab(homeTab)
 runtimeStatus.Text = "Status: ready | Universal"
-notify("Universal menu loaded", 2)
+notify("Universal menu loaded with combat locks", 3)
 print("[xanhub] Universal loaded for place", game.PlaceId)
 
 return {
