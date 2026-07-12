@@ -64,6 +64,27 @@ local LOCOMOTION_IDS = {
 	["138707781762636"] = true, -- Guitar Dance1
 	["89040957520196"] = true, -- Bass Strumming1
 	["81384818367841"] = true, -- Emote Sit ChillStartup
+	["71169404124554"] = true, -- Emote Lean Startup3
+	["72284079162560"] = true, -- Emote BehindHeadIdle
+	["73090768467054"] = true, -- Emote BehindHeadStatic
+	["133522894608941"] = true, -- Emote Cortisol dance
+	["75158607431737"] = true, -- Bass EquipIdle
+	["87932588807124"] = true, -- FlipPhone EquipIdle
+	["133128780519783"] = true, -- Drums EquipIdle
+	["133952297523350"] = true, -- Chalk EquipIdle
+	["111108020510751"] = true, -- Keyboard EquipIdle
+	["111355600199981"] = true, -- PhoneTap
+	-- User-reported sit / chill emotes (catalog IDs — often not under Animations.Emotes)
+	["110521212020909"] = true, -- sit
+	["126257562287528"] = true, -- sit
+	["132477488202815"] = true, -- sit
+	["109178309127603"] = true, -- sit
+	["94972279698754"] = true, -- sit
+	["109278619250401"] = true, -- sit
+	["70540872101043"] = true, -- sit
+	["74721225091795"] = true, -- sit
+	["74219849384808"] = true, -- sit
+	["72822821848529"] = true, -- sit
 }
 
 local function markLocomotionId(animationId)
@@ -148,11 +169,61 @@ function AttackDB.seedLocomotionFromGame()
 	if not anims then
 		return
 	end
-	harvestNonAttackAnims(anims:FindFirstChild("Movement"))
-	harvestNonAttackAnims(anims:FindFirstChild("Emotes"))
-	harvestNonAttackAnims(anims:FindFirstChild("Items"))
+	-- Whole cosmetic trees: never combat.
+	for _, folderName in ipairs({
+		"Movement",
+		"Emotes",
+		"Items",
+		"Instruments",
+		"Basketball",
+		"Rhythm",
+	}) do
+		harvestNonAttackAnims(anims:FindFirstChild(folderName))
+	end
 	harvestStyleLocomotion(anims:FindFirstChild("BaseCombat"))
 	harvestStyleLocomotion(anims:FindFirstChild("Combat"))
+
+	-- Catch sit/lean/chill/lay emotes nested under odd folder names.
+	local ok, list = pcall(function()
+		return anims:GetDescendants()
+	end)
+	if ok and type(list) == "table" then
+		for _, d in ipairs(list) do
+			if d:IsA("Animation") then
+				local n = string.lower(d.Name)
+				local path = string.lower(d:GetFullName())
+				if n:find("sit", 1, true)
+					or n:find("chill", 1, true)
+					or n:find("lean", 1, true)
+					or n:find("lay", 1, true)
+					or n:find("sleep", 1, true)
+					or n:find("lounge", 1, true)
+					or n:find("emote", 1, true)
+					or n:find("dance", 1, true)
+					or path:find("emotes", 1, true)
+					or path:find("%.sit", 1, true)
+					or path:find("sit%.", 1, true)
+				then
+					-- Never blackhole real attack names if they somehow match.
+					local raw = d.Name
+					if not (
+						raw:find("M1")
+						or raw:find("M2")
+						or raw:find("EHit")
+						or raw:find("Grapple")
+						or raw:find("Guardbreak")
+					)
+					then
+						markLocomotionId(d.AnimationId)
+					end
+				end
+			end
+		end
+	end
+end
+
+function AttackDB.ignoreId(animationId)
+	markLocomotionId(animationId)
 end
 
 -- Full attack seed (unique ids). hitDelay ≈ CombatConfig M1 hitbox timing.

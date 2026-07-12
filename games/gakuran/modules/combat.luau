@@ -1224,10 +1224,17 @@ return function(ctx)
 			or name:find("climb", 1, true)
 			or name:find("swim", 1, true)
 			or name:find("sit", 1, true)
+			or name:find("chill", 1, true)
+			or name:find("lean", 1, true)
+			or name:find("lay", 1, true)
+			or name:find("sleep", 1, true)
+			or name:find("lounge", 1, true)
 			or name:find("dance", 1, true)
 			or name:find("emote", 1, true)
 			or name:find("toolnone", 1, true)
+			or name:find("equipidle", 1, true)
 			or name:find("backpedal", 1, true)
+			or name:find("strum", 1, true)
 	end
 
 	local function looksLikeCombatName(name)
@@ -1349,16 +1356,28 @@ return function(ctx)
 
 		if not entry then
 			local combatName = looksLikeCombatName(name)
-			-- Remotes strip names → use Action priority as combat signal when ID unknown.
+			-- Remotes strip names → Action priority can mean combat OR sit/emotes.
+			-- Sit/chill loops are often Length 0 or multi-second; M1/M2 hitboxes are short.
 			local actionPri = isActionPriority(track)
-			if combatName or (actionPri and pure ~= "" and flag("Gakuran Parry Unknown Combat", true)) then
+			local trackLen = 0
+			pcall(function()
+				trackLen = tonumber(track.Length) or 0
+			end)
+			local shortCombatLen = trackLen > 0.12 and trackLen < 1.85
+			local allowActionGuess = actionPri
+				and pure ~= ""
+				and shortCombatLen
+				and flag("Gakuran Parry Unknown Combat", true)
+
+			if combatName or allowActionGuess then
 				if flag("Gakuran Combat Debug Logs", false) and flag("Gakuran Combat Log Unknown", true) then
-					debugLog("unknown combat anim", name, pure, attacker.Name, actionPri and "ActionPri" or "")
+					debugLog("unknown combat anim", name, pure, attacker.Name, actionPri and "ActionPri" or "", string.format("len=%.2f", trackLen))
 					combatToast("warning", "Unknown Combat Anim", string.format(
-						"%s · id %s\nfrom %s · not in DB yet",
+						"%s · id %s\nfrom %s · len %.2fs · not in DB yet",
 						name ~= "" and name or (actionPri and "Action" or "?"),
 						pure,
-						attacker.Name
+						attacker.Name,
+						trackLen
 					), "combat-unknown-" .. pure)
 				end
 
@@ -1380,6 +1399,13 @@ return function(ctx)
 					return
 				end
 			else
+				-- Long Action tracks (sits/emotes) or Core/Idle junk: ignore forever.
+				if pure ~= "" and st.attackDbMod and type(st.attackDbMod.ignoreId) == "function" then
+					-- Learn sit/emote IDs so future scans skip them even if Action-priority.
+					if actionPri and not shortCombatLen then
+						pcall(st.attackDbMod.ignoreId, pure)
+					end
+				end
 				st.handledTracks[track] = true
 				return
 			end
