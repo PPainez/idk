@@ -35,6 +35,8 @@ local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 local env = (type(getgenv) == "function" and getgenv()) or _G
 
+print("[xanhub loader] v1.1.0 | Volt-compatible HTTP")
+
 local function safeDestroy(object)
     if object then
         pcall(function()
@@ -370,45 +372,129 @@ local function createLoaderGui()
     }
 end
 
-local function withCacheBuster(url, attempt)
-    local separator = string.find(url, "?", 1, true) and "&" or "?"
-    return string.format(
-        "%s%sxanhub_cache=%s_%s",
-        url,
-        separator,
-        tostring(os.time()),
-        tostring(attempt or 1)
-    )
+local function getRequestFunction()
+    if type(request) == "function" then
+        return request, "request"
+    end
+    if type(http_request) == "function" then
+        return http_request, "http_request"
+    end
+    if type(httprequest) == "function" then
+        return httprequest, "httprequest"
+    end
+    if type(syn) == "table" and type(syn.request) == "function" then
+        return syn.request, "syn.request"
+    end
+    if type(http) == "table" and type(http.request) == "function" then
+        return http.request, "http.request"
+    end
+    return nil, "game:HttpGet"
+end
+
+local requestFunction, requestName = getRequestFunction()
+
+local function validLuaBody(body)
+    if type(body) ~= "string" or #body < 20 then
+        return false
+    end
+
+    local lowered = string.lower(body)
+    if string.find(lowered, "404: not found", 1, true)
+        or string.find(lowered, "<html", 1, true)
+        or string.find(lowered, "repository not found", 1, true) then
+        return false
+    end
+
+    return true
+end
+
+local function requestOne(url)
+    local errors = {}
+
+    if requestFunction then
+        local ok, response = pcall(requestFunction, {
+            Url = url,
+            Method = "GET",
+            Headers = {
+                ["Cache-Control"] = "no-cache, no-store, max-age=0",
+                ["Pragma"] = "no-cache",
+                ["User-Agent"] = "xanhub-loader/1.1",
+            },
+        })
+
+        if ok and type(response) == "table" then
+            local body = response.Body or response.body or response.ResponseBody
+            local status = tonumber(response.StatusCode or response.Status or response.status_code)
+
+            if validLuaBody(body) and (not status or (status >= 200 and status < 300)) then
+                return body
+            end
+
+            table.insert(errors, string.format(
+                "%s status=%s body=%s",
+                requestName,
+                tostring(status or "unknown"),
+                tostring(body or response.Message or "empty response")
+            ))
+        elseif ok and validLuaBody(response) then
+            return response
+        else
+            table.insert(errors, requestName .. " -> " .. tostring(response))
+        end
+    end
+
+    local okNoCache, noCacheResult = pcall(function()
+        return game:HttpGet(url, false)
+    end)
+    if okNoCache and validLuaBody(noCacheResult) then
+        return noCacheResult
+    end
+    table.insert(errors, "HttpGet(false) -> " .. tostring(noCacheResult))
+
+    local okDefault, defaultResult = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if okDefault and validLuaBody(defaultResult) then
+        return defaultResult
+    end
+    table.insert(errors, "HttpGet(default) -> " .. tostring(defaultResult))
+
+    return nil, table.concat(errors, " | ")
 end
 
 local function fetchSource(urlOrUrls, attempts)
-    attempts = attempts or 3
+    attempts = attempts or 2
 
     local urls = type(urlOrUrls) == "table" and urlOrUrls or {urlOrUrls}
     local errors = {}
 
     for _, url in ipairs(urls) do
         for attempt = 1, attempts do
-            local requestUrl = withCacheBuster(url, attempt)
-            local ok, result = pcall(function()
-                return game:HttpGet(requestUrl, true)
-            end)
-
-            if ok and type(result) == "string" and #result > 20 then
-                return result, nil, url
+            local body, requestError = requestOne(url)
+            if body then
+                return body, nil, url
             end
 
             table.insert(errors, string.format(
                 "%s -> %s",
                 tostring(url),
-                tostring(result or "request failed")
+                tostring(requestError or "request failed")
             ))
 
-            task.wait(0.35 * attempt)
+            task.wait(0.25 * attempt)
         end
     end
 
     return nil, table.concat(errors, " | ")
+end
+
+local function repositoryUrls(path)
+    path = tostring(path):gsub("^/+", "")
+    return {
+        "https://raw.githubusercontent.com/PPainez/idk/main/" .. path,
+        "https://github.com/PPainez/idk/raw/refs/heads/main/" .. path,
+        "https://cdn.jsdelivr.net/gh/PPainez/idk@main/" .. path,
+    }
 end
 
 local function compileSource(source, name)
@@ -451,10 +537,7 @@ local ok, fatalError = xpcall(function()
     end
 
     loader.setProgress(0.30, "Loading xanhub UI...")
-    local uiSource, uiError = fetchSource({
-        UI_URL,
-        "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/ui.luau",
-    })
+    local uiSource, uiError = fetchSource(repositoryUrls("ui.luau"))
     assert(uiSource, "UI request failed: " .. tostring(uiError))
 
     loader.setProgress(0.43, "Compiling interface...")
@@ -465,7 +548,7 @@ local ok, fatalError = xpcall(function()
     assert(type(library) == "table", "UI library returned an invalid value")
 
     local runtime = {
-        version = "1.0.0",
+        version = "1.1.0",
         repositoryRoot = REPOSITORY_ROOT,
         mainRoot = MAIN_ROOT,
         uiUrl = UI_URL,
@@ -486,22 +569,14 @@ local ok, fatalError = xpcall(function()
 
     if featured then
         targetName = tostring(featured.name or featured.file or "Featured Game")
-        targetUrl = {
-            REPOSITORY_ROOT .. "/games/" .. tostring(featured.file),
-            "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/games/" .. tostring(featured.file),
-            REPOSITORY_ROOT .. "/main/games/" .. tostring(featured.file),
-        }
+        targetUrl = repositoryUrls("games/" .. tostring(featured.file))
         runtime.featured = true
         runtime.gameName = targetName
         runtime.gameFile = featured.file
         loader.setProgress(0.67, "Featured game found: " .. targetName)
     else
         targetName = "Universal"
-        targetUrl = {
-            REPOSITORY_ROOT .. "/universal.luau",
-            "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/universal.luau",
-            REPOSITORY_ROOT .. "/main/universal.luau",
-        }
+        targetUrl = repositoryUrls("universal.luau")
         runtime.featured = false
         runtime.gameName = "Universal"
         loader.setProgress(0.67, "No featured script; using Universal")
@@ -515,11 +590,7 @@ local ok, fatalError = xpcall(function()
         runtime.featured = false
         runtime.gameName = "Universal"
         targetName = "Universal"
-        targetUrl = {
-            REPOSITORY_ROOT .. "/universal.luau",
-            "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/universal.luau",
-            REPOSITORY_ROOT .. "/main/universal.luau",
-        }
+        targetUrl = repositoryUrls("universal.luau")
         loader.setProgress(0.80, "Featured script unavailable; loading Universal")
         targetSource, targetError = fetchSource(targetUrl)
     end
