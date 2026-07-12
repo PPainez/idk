@@ -744,9 +744,27 @@ return function(ctx)
 		if not id and type(track.AnimationId) == "string" then
 			id = track.AnimationId
 		end
+		local pure = tostring(id or ""):match("%d+") or tostring(id or "")
 
-		-- Never treat locomotion as an attack (walk/run/idle spam).
-		if isLocomotionName(name) then
+		-- Drop known walk/run/idle IDs even when the track is named "Animation" (common on remotes).
+		if pure ~= "" and st.db and type(st.db.lookup) == "function" then
+			-- AttackDB.isLocomotionId available via module if we stashed it
+		end
+		local locomotionIds = {
+			["99661732639863"] = true,
+			["122843775061652"] = true,
+			["83600639547203"] = true,
+			["85823794654077"] = true,
+			["117293898907979"] = true,
+			["137015026151472"] = true,
+			["76945839486275"] = true,
+			["111699625251889"] = true,
+			["91658474738843"] = true,
+			["135133599113049"] = true,
+			["130267921858674"] = true,
+			["78370245490631"] = true,
+		}
+		if locomotionIds[pure] or isLocomotionName(name) then
 			st.seenTracks[track] = true
 			return
 		end
@@ -756,10 +774,12 @@ return function(ctx)
 			return
 		end
 
+		-- Primary path: match by AnimationId (names are often just "Animation" on remotes).
 		local entry = db:lookup(id)
-		local pure = tostring(id or ""):match("%d+") or tostring(id or "")
 
 		if not entry then
+			-- Only guess/log when the name clearly looks combat-related.
+			-- Generic name "Animation" without DB hit is ignored (likely idle/tool/etc).
 			if looksLikeCombatName(name) then
 				if flag("Gakuran Combat Debug Logs", false) and flag("Gakuran Combat Log Unknown", true) then
 					debugLog("unknown combat anim", name, pure, attacker.Name)
@@ -780,7 +800,6 @@ return function(ctx)
 						hitDelay = delay,
 						window = 0.125,
 					}
-					-- Learn it for this session so we don't re-toast every swing.
 					if pure and pure ~= "" and db.byId then
 						db.byId[pure] = entry
 						db.count = (tonumber(db.count) or 0) + 1
@@ -790,7 +809,6 @@ return function(ctx)
 					return
 				end
 			else
-				-- Non-combat unknown (accessories, tools, emotes, etc.) — ignore silently.
 				st.seenTracks[track] = true
 				return
 			end

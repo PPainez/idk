@@ -1,15 +1,38 @@
 --[[
     xanhub | gakuran | attack animation database
 
-    Built from ReplicatedStorage combat style folders via CombatAnimationUtils
-    when available, with a static seed of known M1/M2/EHit ids.
+    Complete combat attack IDs scraped from ReplicatedStorage.Animations.Combat/*
+    and BaseCombat (Wrestling/MuayThai/Kure/Karate/Boxing/etc).
+
+    NOTE: Remote clients often expose track.Animation.Name as just "Animation".
+    Matching is by numeric AnimationId only — names are for debug/toasts.
 ]]
 
 local AttackDB = {}
 
--- Static seed (unique anim ids). hitDelay ≈ DefaultHitboxDelay timing from CombatConfig.M1
+-- Locomotion / non-attack IDs to ignore even when the anim object is named "Animation".
+local LOCOMOTION_IDS = {
+	["99661732639863"] = true, -- Idle1
+	["122843775061652"] = true, -- Idle2
+	["83600639547203"] = true, -- MaleWalk
+	["85823794654077"] = true, -- MaleRun
+	["117293898907979"] = true, -- FemaleWalk
+	["137015026151472"] = true, -- FemaleRun
+	["76945839486275"] = true, -- style Walk (Muay/Kure)
+	["111699625251889"] = true, -- Wrestling Walk
+	["91658474738843"] = true, -- Wrestling Walk alt
+	["135133599113049"] = true, -- Boxing Walk
+	["130267921858674"] = true, -- Karate Walk
+	["78370245490631"] = true, -- default Walk
+	["101681156645386"] = true, -- ToolNone
+	["101758912482710"] = true, -- Fall
+	["80742414334394"] = true, -- Jump
+	["96856467950733"] = true, -- Sit
+}
+
+-- Full attack seed (unique ids). hitDelay ≈ CombatConfig M1 hitbox timing.
 local SEED = {
-	-- Base / shared
+	-- Base
 	["113961476814500"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
 	["82165070516177"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
 	["138197524717835"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
@@ -20,6 +43,7 @@ local SEED = {
 	["104407197874289"] = { name = "3rdEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["85931837451298"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["114511731321756"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["74690341409113"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	-- Basic
 	["83491849294956"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
 	["89420531853362"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
@@ -51,7 +75,6 @@ local SEED = {
 	["89039586375625"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
 	["101619248052969"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
 	["82855179231529"] = { name = "MomentumM2", kind = "M2", hitDelay = 0.38, window = 0.125 },
-	["91352556581859"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	-- Karate
 	["137837926745158"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
 	["100981571094705"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
@@ -59,6 +82,7 @@ local SEED = {
 	["86495068205420"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
 	["120393553812903"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
 	["101347661150789"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["90752347516770"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	-- Kure
 	["82904229252991"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
 	["103732110215321"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
@@ -80,32 +104,63 @@ local SEED = {
 	["112759168172605"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
 	["114647502301740"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
 	["118943955490014"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
-	["90752347516770"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	-- Striker
 	["127909081017342"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
+	["132840225082238"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
+	["79563637573277"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
+	["88761422474765"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
 	["118070233153900"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
+	["98462236639320"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
 	["122451562066756"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
+	["77710266587706"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
 	["114364673509520"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
-	-- Wrestling
+	-- Wrestling (these were the big missers)
+	["82903450925391"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
 	["119685134442395"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
 	["107464726433388"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
-	["100794890036133"] = { name = "M2Success", kind = "M2", hitDelay = 0.38, window = 0.125 },
+	["91485623489753"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
+	["73748315742870"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
 	["109303037515668"] = { name = "M2EHit", kind = "M2", hitDelay = 0.38, window = 0.125 },
+	["100794890036133"] = { name = "M2Success", kind = "M2", hitDelay = 0.38, window = 0.125 },
+	["80309578200579"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["91352556581859"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	-- Grappling
+	["97783129267001"] = { name = "GrappleAttacker", kind = "M2", hitDelay = 0.40, window = 0.125 },
+	["72258480653932"] = { name = "DirtyAttacker", kind = "M2", hitDelay = 0.40, window = 0.125 },
+	["84792890110748"] = { name = "DirtyVictim", kind = "M2", hitDelay = 0.40, window = 0.125 },
+	["128307941333158"] = { name = "GrappleVictim", kind = "M2", hitDelay = 0.40, window = 0.125 },
 }
+
+function AttackDB.extractId(animationId)
+	if type(animationId) == "number" then
+		return tostring(math.floor(animationId))
+	end
+	if type(animationId) ~= "string" then
+		return nil
+	end
+	return animationId:match("%d+")
+end
+
+function AttackDB.isLocomotionId(id)
+	id = AttackDB.extractId(id) or tostring(id or "")
+	return LOCOMOTION_IDS[id] == true
+end
 
 local function classify(name)
 	local kind, delay = "M1", 0.32
 	if name:find("M2") then
 		kind, delay = "M2", 0.38
-	elseif name:find("EHit") or name:find("Guardbreak") then
-		kind, delay = "EHit", 0.30
-	elseif name:find("1stM1") then
+	elseif name:find("EHit") or name:find("Guardbreak") or name:find("Grapple") or name:find("Dirty") then
+		if name:find("M2") then
+			kind, delay = "M2", 0.38
+		else
+			kind, delay = "EHit", 0.30
+		end
+	elseif name:find("1stM1") or name:find("1st") then
 		delay = 0.30
-	elseif name:find("2ndM1") then
+	elseif name:find("2ndM1") or name:find("3rdM1") or name:find("2nd") or name:find("3rd") then
 		delay = 0.28
-	elseif name:find("3rdM1") then
-		delay = 0.28
-	elseif name:find("4thM1") then
+	elseif name:find("4thM1") or name:find("4th") then
 		delay = 0.35
 	end
 	return kind, delay
@@ -115,7 +170,7 @@ local function isAttackName(name)
 	if type(name) ~= "string" then
 		return false
 	end
-	if name:find("Block") then
+	if name:find("Block") and not name:find("Guardbreak") then
 		return false
 	end
 	if name:find("Idle") or name:find("Walk") or name:find("Run") or name:find("Parry") then
@@ -126,17 +181,11 @@ local function isAttackName(name)
 		or name:find("EHit")
 		or name:find("Momentum")
 		or name:find("Success")
+		or name:find("Grapple")
+		or name:find("Attacker")
+		or name:find("Victim")
+		or name:find("Dirty")
 		or (name:find("Hit") ~= nil)
-end
-
-function AttackDB.extractId(animationId)
-	if type(animationId) == "number" then
-		return tostring(math.floor(animationId))
-	end
-	if type(animationId) ~= "string" then
-		return nil
-	end
-	return animationId:match("%d+")
 end
 
 function AttackDB.create()
@@ -159,23 +208,6 @@ function AttackDB.create()
 	}
 
 	function db:rebuild()
-		-- Pull live combat folders when modules are available.
-		local utils
-		if type(getloadedmodules) == "function" then
-			local ok, modules = pcall(getloadedmodules)
-			if ok and type(modules) == "table" then
-				for _, moduleScript in ipairs(modules) do
-					if moduleScript and moduleScript.Name == "CombatAnimationUtils" then
-						local reqOk, result = pcall(require, moduleScript)
-						if reqOk and type(result) == "table" then
-							utils = result
-						end
-						break
-					end
-				end
-			end
-		end
-
 		local function addAnim(style, anim)
 			if not anim or not anim:IsA("Animation") then
 				return
@@ -185,7 +217,7 @@ function AttackDB.create()
 				return
 			end
 			local id = AttackDB.extractId(anim.AnimationId)
-			if not id then
+			if not id or AttackDB.isLocomotionId(id) then
 				return
 			end
 			local kind, delay = classify(name)
@@ -201,11 +233,13 @@ function AttackDB.create()
 				}
 				self.byId[id] = entry
 			else
-				entry.name = entry.name or name
+				if name and name ~= "Animation" then
+					entry.name = name
+				end
 				entry.kind = entry.kind or kind
 				entry.hitDelay = entry.hitDelay or delay
 			end
-			if style and not entry.styles[style] then
+			if style then
 				entry.styles[style] = true
 			end
 		end
@@ -220,34 +254,38 @@ function AttackDB.create()
 			return {}
 		end
 
-		if utils and type(utils.GetAllCombatStyles) == "function" then
-			local ok, styles = pcall(utils.GetAllCombatStyles)
-			if ok and type(styles) == "table" then
-				for _, style in ipairs(styles) do
-					local folderOk, folder = pcall(utils.GetCombatAnimsFolder, style)
-					if folderOk and typeof(folder) == "Instance" then
-						for _, d in ipairs(safeDescendants(folder)) do
-							pcall(addAnim, style, d)
+		if type(getloadedmodules) == "function" then
+			local okMods, modules = pcall(getloadedmodules)
+			if okMods and type(modules) == "table" then
+				for _, moduleScript in ipairs(modules) do
+					if moduleScript and moduleScript.Name == "CombatAnimationUtils" then
+						local reqOk, utils = pcall(require, moduleScript)
+						if reqOk and type(utils) == "table" and type(utils.GetAllCombatStyles) == "function" then
+							local ok, styles = pcall(utils.GetAllCombatStyles)
+							if ok and type(styles) == "table" then
+								for _, style in ipairs(styles) do
+									local folderOk, folder = pcall(utils.GetCombatAnimsFolder, style)
+									if folderOk and typeof(folder) == "Instance" then
+										for _, d in ipairs(safeDescendants(folder)) do
+											pcall(addAnim, style, d)
+										end
+									end
+								end
+							end
 						end
+						break
 					end
 				end
 			end
 		end
 
-		-- BaseCombat / Combat folders (defensive — some executors restrict certain trees)
 		local anims = game:GetService("ReplicatedStorage"):FindFirstChild("Animations")
 		if anims then
-			local base = anims:FindFirstChild("BaseCombat")
-			if base then
-				for _, d in ipairs(safeDescendants(base)) do
-					pcall(addAnim, "Base", d)
-				end
-			end
-			local combat = anims:FindFirstChild("Combat")
-			if combat then
-				for _, styleFolder in ipairs(combat:GetChildren()) do
-					for _, d in ipairs(safeDescendants(styleFolder)) do
-						pcall(addAnim, styleFolder.Name, d)
+			for _, folderName in ipairs({ "BaseCombat", "Combat" }) do
+				local folder = anims:FindFirstChild(folderName)
+				if folder then
+					for _, d in ipairs(safeDescendants(folder)) do
+						pcall(addAnim, folderName, d)
 					end
 				end
 			end
@@ -264,7 +302,7 @@ function AttackDB.create()
 
 	function db:lookup(animationId)
 		local id = AttackDB.extractId(animationId)
-		if not id then
+		if not id or AttackDB.isLocomotionId(id) then
 			return nil
 		end
 		return self.byId[id]
@@ -281,8 +319,6 @@ function AttackDB.create()
 		return list
 	end
 
-	-- Seed only at create-time. Live rebuild is expensive (style folders + getloadedmodules)
-	-- and must never block hub boot / the multi-game loader.
 	local n = 0
 	for _ in pairs(byId) do
 		n = n + 1
