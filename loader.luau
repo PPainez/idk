@@ -35,7 +35,7 @@ local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 local env = (type(getgenv) == "function" and getgenv()) or _G
 
-print("[xanhub loader] v1.1.0 | Volt-compatible HTTP")
+print("[xanhub loader] v1.1.1 | Volt-compatible HTTP")
 
 local function safeDestroy(object)
     if object then
@@ -398,14 +398,33 @@ local function validLuaBody(body)
         return false
     end
 
-    local lowered = string.lower(body)
-    if string.find(lowered, "404: not found", 1, true)
-        or string.find(lowered, "<html", 1, true)
-        or string.find(lowered, "repository not found", 1, true) then
+    -- Only inspect the beginning of the response. Searching the entire Lua
+    -- source caused valid scripts to be rejected when they contained strings
+    -- such as "<html" or "404: not found" inside their own HTTP validators.
+    local cleaned = body:gsub("^\239\187\191", "")
+    local prefix = string.lower(string.sub(cleaned:match("^%s*(.*)") or cleaned, 1, 256))
+
+    if prefix == "404: not found"
+        or string.match(prefix, "^404[:%s]")
+        or string.match(prefix, "^<!doctype%s+html")
+        or string.match(prefix, "^<html")
+        or string.match(prefix, "^repository%s+not%s+found") then
         return false
     end
 
     return true
+end
+
+local function summarizeBody(body)
+    if type(body) ~= "string" then
+        return tostring(body or "empty response")
+    end
+
+    local compact = body:gsub("%s+", " ")
+    if #compact > 180 then
+        compact = string.sub(compact, 1, 180) .. "..."
+    end
+    return compact
 end
 
 local function requestOne(url)
@@ -434,7 +453,7 @@ local function requestOne(url)
                 "%s status=%s body=%s",
                 requestName,
                 tostring(status or "unknown"),
-                tostring(body or response.Message or "empty response")
+                summarizeBody(body or response.Message)
             ))
         elseif ok and validLuaBody(response) then
             return response
@@ -548,7 +567,7 @@ local ok, fatalError = xpcall(function()
     assert(type(library) == "table", "UI library returned an invalid value")
 
     local runtime = {
-        version = "1.1.0",
+        version = "1.1.1",
         repositoryRoot = REPOSITORY_ROOT,
         mainRoot = MAIN_ROOT,
         uiUrl = UI_URL,
