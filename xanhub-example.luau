@@ -1,14 +1,26 @@
 --[[
     xanhub complete example
 
-    This file demonstrates the public xanhub UI library API and every control type.
-    Replace UI_URL only if you move the library to another repository.
+    Demonstrates the public xanhub UI library API and every control type.
 ]]
 
-local UI_URL = "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/ui.luau"
+local REPOSITORY_ROOT = "https://raw.githubusercontent.com/PPainez/idk/main"
 
-local source = game:HttpGet(UI_URL, true)
-local chunk, compileError = loadstring(source)
+local function bootstrapShared(path)
+	local source = game:HttpGet(REPOSITORY_ROOT .. "/" .. path, true)
+	local chunk, compileError = loadstring(source)
+	assert(chunk, "[xanhub] Shared module compile failed (" .. path .. "): " .. tostring(compileError))
+	return chunk()
+end
+
+local Http = bootstrapShared("shared/http.luau")
+local Constants = bootstrapShared("shared/constants.luau")
+Http.setUserAgent(Constants.EXAMPLE_USER_AGENT)
+
+local source, fetchError = Http.fetchSource(Constants.uiUrl())
+assert(source, "[xanhub] Library request failed: " .. tostring(fetchError))
+
+local chunk, compileError = Http.compileSource(source)
 assert(chunk, "[xanhub] Library compile failed: " .. tostring(compileError))
 
 local library = chunk()

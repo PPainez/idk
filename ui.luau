@@ -2,6 +2,15 @@
     xanhub UI Library
     Rebuilt from the legacy uwuware 2.x interface.
 
+    Module index (for maintainers):
+      Services/env setup ............... lines ~15-95
+      Core library table + theme ....... lines ~52-380
+      SafeTween + Create helpers ....... lines ~117-600
+      Tab/column/section builders ...... lines ~600-1200
+      Control types (toggle/slider/...)  lines ~1200-2800
+      Settings tab + config I/O ........ lines ~2800-3400
+      Init/Unload + notifications ...... lines ~3400-3745
+
     Goals:
     - executor-compatible GUI parenting
     - no legacy GuiObject tween errors

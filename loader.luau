@@ -2,9 +2,12 @@
     xanhub | multi-game loader
 
     Repository layout:
+      /shared/http.luau, constants.luau, connection.luau, module_loader.luau
       /ui.luau
       /loader.luau
       /universal.luau
+      /universal/modules/*.luau
+      /universal/lib/context.luau
       /games/<game-file>.luau
 
     Add featured games in FEATURED_PLACES or FEATURED_UNIVERSES below.
@@ -16,6 +19,29 @@ local REPOSITORY_ROOT = "https://raw.githubusercontent.com/PPainez/idk/main"
 local UI_URL = REPOSITORY_ROOT .. "/ui.luau"
 local MAIN_ROOT = REPOSITORY_ROOT
 local UNIVERSAL_URL = REPOSITORY_ROOT .. "/universal.luau"
+
+local function bootstrapShared(path)
+	local source = game:HttpGet(REPOSITORY_ROOT .. "/" .. path, true)
+	local chunk, compileError = loadstring(source)
+	assert(chunk, "Shared module compile failed (" .. path .. "): " .. tostring(compileError))
+	return chunk()
+end
+
+local Http = bootstrapShared("shared/http.luau")
+local Constants = bootstrapShared("shared/constants.luau")
+Http.setUserAgent(Constants.LOADER_USER_AGENT)
+
+local function repositoryUrls(path)
+	return Constants.repositoryUrls(path)
+end
+
+local function fetchSource(urlOrUrls, attempts)
+	return Http.fetchSource(urlOrUrls, attempts)
+end
+
+local function compileSource(source)
+	return Http.compileSource(source)
+end
 
 -- Place-specific scripts. This is the usual table to edit.
 local FEATURED_PLACES = {
@@ -35,7 +61,7 @@ local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 local env = (type(getgenv) == "function" and getgenv()) or _G
 
-print("[xanhub loader] v1.1.1 | Volt-compatible HTTP")
+print("[xanhub loader] Volt-compatible HTTP")
 
 local function safeDestroy(object)
     if object then
@@ -372,158 +398,6 @@ local function createLoaderGui()
     }
 end
 
-local function getRequestFunction()
-    if type(request) == "function" then
-        return request, "request"
-    end
-    if type(http_request) == "function" then
-        return http_request, "http_request"
-    end
-    if type(httprequest) == "function" then
-        return httprequest, "httprequest"
-    end
-    if type(syn) == "table" and type(syn.request) == "function" then
-        return syn.request, "syn.request"
-    end
-    if type(http) == "table" and type(http.request) == "function" then
-        return http.request, "http.request"
-    end
-    return nil, "game:HttpGet"
-end
-
-local requestFunction, requestName = getRequestFunction()
-
-local function validLuaBody(body)
-    if type(body) ~= "string" or #body < 20 then
-        return false
-    end
-
-    -- Only inspect the beginning of the response. Searching the entire Lua
-    -- source caused valid scripts to be rejected when they contained strings
-    -- such as "<html" or "404: not found" inside their own HTTP validators.
-    local cleaned = body:gsub("^\239\187\191", "")
-    local prefix = string.lower(string.sub(cleaned:match("^%s*(.*)") or cleaned, 1, 256))
-
-    if prefix == "404: not found"
-        or string.match(prefix, "^404[:%s]")
-        or string.match(prefix, "^<!doctype%s+html")
-        or string.match(prefix, "^<html")
-        or string.match(prefix, "^repository%s+not%s+found") then
-        return false
-    end
-
-    return true
-end
-
-local function summarizeBody(body)
-    if type(body) ~= "string" then
-        return tostring(body or "empty response")
-    end
-
-    local compact = body:gsub("%s+", " ")
-    if #compact > 180 then
-        compact = string.sub(compact, 1, 180) .. "..."
-    end
-    return compact
-end
-
-local function requestOne(url)
-    local errors = {}
-
-    if requestFunction then
-        local ok, response = pcall(requestFunction, {
-            Url = url,
-            Method = "GET",
-            Headers = {
-                ["Cache-Control"] = "no-cache, no-store, max-age=0",
-                ["Pragma"] = "no-cache",
-                ["User-Agent"] = "xanhub-loader/1.1",
-            },
-        })
-
-        if ok and type(response) == "table" then
-            local body = response.Body or response.body or response.ResponseBody
-            local status = tonumber(response.StatusCode or response.Status or response.status_code)
-
-            if validLuaBody(body) and (not status or (status >= 200 and status < 300)) then
-                return body
-            end
-
-            table.insert(errors, string.format(
-                "%s status=%s body=%s",
-                requestName,
-                tostring(status or "unknown"),
-                summarizeBody(body or response.Message)
-            ))
-        elseif ok and validLuaBody(response) then
-            return response
-        else
-            table.insert(errors, requestName .. " -> " .. tostring(response))
-        end
-    end
-
-    local okNoCache, noCacheResult = pcall(function()
-        return game:HttpGet(url, false)
-    end)
-    if okNoCache and validLuaBody(noCacheResult) then
-        return noCacheResult
-    end
-    table.insert(errors, "HttpGet(false) -> " .. tostring(noCacheResult))
-
-    local okDefault, defaultResult = pcall(function()
-        return game:HttpGet(url)
-    end)
-    if okDefault and validLuaBody(defaultResult) then
-        return defaultResult
-    end
-    table.insert(errors, "HttpGet(default) -> " .. tostring(defaultResult))
-
-    return nil, table.concat(errors, " | ")
-end
-
-local function fetchSource(urlOrUrls, attempts)
-    attempts = attempts or 2
-
-    local urls = type(urlOrUrls) == "table" and urlOrUrls or {urlOrUrls}
-    local errors = {}
-
-    for _, url in ipairs(urls) do
-        for attempt = 1, attempts do
-            local body, requestError = requestOne(url)
-            if body then
-                return body, nil, url
-            end
-
-            table.insert(errors, string.format(
-                "%s -> %s",
-                tostring(url),
-                tostring(requestError or "request failed")
-            ))
-
-            task.wait(0.25 * attempt)
-        end
-    end
-
-    return nil, table.concat(errors, " | ")
-end
-
-local function repositoryUrls(path)
-    path = tostring(path):gsub("^/+", "")
-    return {
-        "https://raw.githubusercontent.com/PPainez/idk/main/" .. path,
-        "https://github.com/PPainez/idk/raw/refs/heads/main/" .. path,
-        "https://cdn.jsdelivr.net/gh/PPainez/idk@main/" .. path,
-    }
-end
-
-local function compileSource(source, name)
-    local chunk, compileError = loadstring(source)
-    if not chunk then
-        return nil, tostring(compileError)
-    end
-    return chunk
-end
-
 local function resolveFeaturedGame()
     return FEATURED_PLACES[game.PlaceId] or FEATURED_UNIVERSES[game.GameId]
 end
@@ -560,14 +434,14 @@ local ok, fatalError = xpcall(function()
     assert(uiSource, "UI request failed: " .. tostring(uiError))
 
     loader.setProgress(0.43, "Compiling interface...")
-    local uiChunk, uiCompileError = compileSource(uiSource, "xanhub/ui.luau")
+    local uiChunk, uiCompileError = compileSource(uiSource)
     assert(uiChunk, "UI compile failed: " .. tostring(uiCompileError))
 
     local library = uiChunk()
     assert(type(library) == "table", "UI library returned an invalid value")
 
     local runtime = {
-        version = "1.1.1",
+        version = type(library.version) == "string" and library.version or "3.2.1",
         repositoryRoot = REPOSITORY_ROOT,
         mainRoot = MAIN_ROOT,
         uiUrl = UI_URL,
@@ -617,7 +491,7 @@ local ok, fatalError = xpcall(function()
     assert(targetSource, targetName .. " request failed: " .. tostring(targetError))
 
     loader.setProgress(0.88, "Compiling " .. targetName .. "...")
-    local targetChunk, targetCompileError = compileSource(targetSource, "xanhub/" .. targetName)
+    local targetChunk, targetCompileError = compileSource(targetSource)
     assert(targetChunk, targetName .. " compile failed: " .. tostring(targetCompileError))
 
     loader.setProgress(0.95, "Starting " .. targetName .. " menu...")
