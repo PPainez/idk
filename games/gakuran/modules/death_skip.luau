@@ -256,19 +256,13 @@ return function(ctx)
 
 		task.spawn(function()
 			local ok, err = pcall(function()
+				-- Always complete the 7-click heart path: dorespawn() only runs after v10 >= 7.
+				-- Instant also blasts remotes first in case RespawnRE/LoadCharacter is enough.
 				if flag("Gakuran Skip Death Instant", true) then
 					fireRespawnRemotes()
-					-- Heart minigame needs 7 clicks (respawnstuff v10 >= 7).
-					-- Instant path still fires them fast; server may only listen after dorespawn.
-					for _ = 1, 8 do
-						clickHeartOnce()
-						task.wait(0.08)
-					end
-					fireRespawnRemotes()
-				else
-					completeHeartMinigame()
-					fireRespawnRemotes()
 				end
+				completeHeartMinigame()
+				fireRespawnRemotes()
 
 				-- Local cleanup so the overlay never sticks if remotes lag
 				clearDeathEffects()
