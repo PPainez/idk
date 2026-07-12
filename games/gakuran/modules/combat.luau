@@ -711,7 +711,8 @@ return function(ctx)
 		part.CanTouch = false
 		part.CastShadow = false
 		part.Massless = true
-		part.Material = Enum.Material.ForceField
+		-- Neon reads better in-world than ForceField on some executors/graphics.
+		part.Material = Enum.Material.Neon
 		part.Color = color or KIND_COLORS.M1
 		part.Transparency = 1
 		part.Size = Vector3.new(1, 1, 1)
@@ -780,21 +781,21 @@ return function(ctx)
 		local selection = Instance.new("SelectionBox")
 		selection.Name = "Outline"
 		selection.Adornee = shell
-		selection.LineThickness = 0.04
-		selection.SurfaceTransparency = 1
+		selection.LineThickness = 0.08
+		selection.SurfaceTransparency = 0.85
 		selection.Color3 = KIND_COLORS.M1
-		selection.Transparency = 0.15
+		selection.Transparency = 0.05
 		selection.Parent = shell
 
-		-- Outer shell glass (very faint volume so it reads in 3D, not just edges)
+		-- Outer shell glass (faint volume so it reads in 3D, not just edges)
 		local shellVolume = makeGhostPart("ShellVolume", KIND_COLORS.M1)
 		shellVolume.Material = Enum.Material.ForceField
-		shellVolume.Transparency = 0.92
+		shellVolume.Transparency = 0.82
 		shellVolume.Parent = model
 
 		local fill = makeGhostPart("ChargeFill", KIND_COLORS.M1)
-		fill.Material = Enum.Material.ForceField
-		fill.Transparency = 0.75
+		fill.Material = Enum.Material.Neon
+		fill.Transparency = 0.55
 		fill.Parent = model
 
 		-- World billboard label above the 3D box
@@ -964,21 +965,21 @@ return function(ctx)
 
 				vizEntry.shellVolume.Size = boxSize
 				vizEntry.shellVolume.CFrame = boxCf
-				-- Faint volume ramps slightly with charge so M1/M2 both read in world.
-				vizEntry.shellVolume.Transparency = 0.94 - progress * 0.08
+				-- Volume ramps with charge so M1/M2 both read clearly in world.
+				vizEntry.shellVolume.Transparency = 0.88 - progress * 0.18
 
 				-- Charge fill grows from the feet upward inside the shell.
-				local fillH = math.max(0.08, boxSize.Y * progress)
+				local fillH = math.max(0.12, boxSize.Y * math.max(progress, 0.08))
 				local fillSize = Vector3.new(
-					math.max(0.2, boxSize.X - 0.35),
+					math.max(0.35, boxSize.X - 0.25),
 					fillH,
-					math.max(0.2, boxSize.Z - 0.35)
+					math.max(0.35, boxSize.Z - 0.25)
 				)
 				vizEntry.fill.Size = fillSize
 				vizEntry.fill.CFrame = boxCf * CFrame.new(0, -boxSize.Y * 0.5 + fillH * 0.5, 0)
-				vizEntry.fill.Transparency = 0.9 - progress * (0.9 - fullFillTransparency)
+				vizEntry.fill.Transparency = 0.75 - progress * (0.75 - fullFillTransparency)
 
-				vizEntry.selection.Transparency = 0.35 - progress * 0.25
+				vizEntry.selection.Transparency = 0.2 - progress * 0.15
 				vizEntry.billboard.StudsOffset = Vector3.new(0, boxSize.Y * 0.55 + 0.35, 0)
 				vizEntry.label.Text = string.format(
 					"%s %d%%",
@@ -1008,7 +1009,8 @@ return function(ctx)
 
 		startVisualizer(attacker, track, dbEntry)
 
-		local hitDelay = tonumber(dbEntry.hitDelay) or 0.32
+		-- Style-aware hitbox delay (slugger M1 ~0.2s, hakari ~0.45s, slugger M2 ~0.82s).
+		local hitDelay = styleHitDelay(attacker, dbEntry)
 		local window = tonumber(dbEntry.window) or 0.125
 		local range = numFlag("Gakuran Range Prefilter", 14)
 		local m2Attack = isM2Entry(dbEntry)
@@ -1074,9 +1076,9 @@ return function(ctx)
 				return
 			end
 
-			-- Soft global cooldown so we don't hammer Block/Evasive.
+			-- Soft cooldown — keep low so 2nd/3rd/4th M1 in a combo still parry.
 			local now = os.clock()
-			if autoParry and (now - (st.lastParryAt or 0)) < 0.12 and not (dodgeM2 and m2Attack) then
+			if autoParry and (now - (st.lastParryAt or 0)) < 0.05 and not (dodgeM2 and m2Attack) then
 				return
 			end
 
@@ -1178,10 +1180,13 @@ return function(ctx)
 			return false
 		end
 		local lower = string.lower(name)
-		if lower:find("block", 1, true) and not lower:find("hit", 1, true) then
+		if lower:find("block", 1, true) and not lower:find("guardbreak", 1, true) and not lower:find("ehit", 1, true) then
 			return false
 		end
-		if lower:find("parry", 1, true) or lower:find("guard", 1, true) and not lower:find("guardbreak", 1, true) then
+		if lower:find("parry", 1, true) then
+			return false
+		end
+		if lower:find("guard", 1, true) and not lower:find("guardbreak", 1, true) then
 			return false
 		end
 		return lower:find("m1", 1, true)
@@ -1198,12 +1203,30 @@ return function(ctx)
 			or lower:find("throw", 1, true)
 			or lower:find("momentum", 1, true)
 			or lower:find("guardbreak", 1, true)
+			or lower:find("crit", 1, true)
+			or lower:find("grab", 1, true)
+			or lower:find("slam", 1, true)
+	end
+
+	local function isActionPriority(track)
+		local pri = nil
+		pcall(function()
+			pri = track.Priority
+		end)
+		if not pri then
+			return false
+		end
+		-- Remote combat M1/M2 play as Action / Action2 / Action3 / Action4.
+		return pri == Enum.AnimationPriority.Action
+			or pri == Enum.AnimationPriority.Action2
+			or pri == Enum.AnimationPriority.Action3
+			or pri == Enum.AnimationPriority.Action4
 	end
 
 	local function classifyFallback(name)
 		local lower = string.lower(tostring(name or ""))
-		if lower:find("m2", 1, true) then
-			return "M2", 0.38
+		if lower:find("m2", 1, true) or lower:find("crit", 1, true) then
+			return "M2", 0.40
 		end
 		if lower:find("ehit", 1, true) or lower:find("guardbreak", 1, true) then
 			return "EHit", 0.30
@@ -1220,6 +1243,72 @@ return function(ctx)
 		return "M1", 0.32
 	end
 
+	local function styleHitDelay(attacker, dbEntry)
+		local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
+		local character = getCharacter(attacker)
+		local style = nil
+		if character then
+			local pd = character:FindFirstChild("PlayerData")
+			if pd then
+				style = pd:GetAttribute("Style") or pd:GetAttribute("CombatStyle")
+			end
+		end
+		if type(style) ~= "string" or style == "" then
+			return delay
+		end
+		local key = string.lower(style)
+		-- CombatConfig style base hitbox delays (live scrape).
+		local styleM1 = {
+			basic = 0.32,
+			boxing = 0.32,
+			capoeira = 0.33,
+			hakari = 0.28,
+			karate = 0.24,
+			kure = 0.32,
+			muaythai = 0.30,
+			slugger = 0.20,
+			striker = 0.32,
+			wrestling = 0.32,
+			default = 0.32,
+		}
+		local styleM2 = {
+			basic = 0.525,
+			boxing = 0.43,
+			capoeira = 0.45,
+			hakari = 0.59,
+			karate = 0.4875,
+			kure = 0.30,
+			muaythai = 0.60,
+			slugger = 0.82,
+			striker = 0.30,
+			wrestling = 0.525,
+			default = 0.30,
+		}
+		local kind = dbEntry and dbEntry.kind
+		local name = tostring(dbEntry and dbEntry.name or "")
+		if kind == "M2" or name:find("M2", 1, true) or name:find("Crit", 1, true) then
+			return styleM2[key] or delay
+		end
+		if kind == "EHit" or name:find("EHit", 1, true) then
+			return delay
+		end
+		-- M1 index offsets when name encodes 1st/2nd/3rd/4th
+		local base = styleM1[key] or delay
+		if name:find("1st", 1, true) then
+			return base
+		end
+		if name:find("2nd", 1, true) then
+			return base
+		end
+		if name:find("3rd", 1, true) then
+			return base
+		end
+		if name:find("4th", 1, true) then
+			return base + 0.03
+		end
+		return base
+	end
+
 	local function onAttackTrack(attacker, track)
 		if ctx.state.unloading then
 			return
@@ -1234,9 +1323,11 @@ return function(ctx)
 			return
 		end
 
-		-- Deduplicate the same AnimationTrack instance.
-		st.seenTracks = st.seenTracks or setmetatable({}, { __mode = "k" })
-		if st.seenTracks[track] then
+		-- handled = fully processed (scheduled or discarded). NOT set when only out-of-range.
+		-- Previously marking tracks "seen" before range check made punches + viz miss forever
+		-- if the first sighting was outside range.
+		st.handledTracks = st.handledTracks or setmetatable({}, { __mode = "k" })
+		if st.handledTracks[track] then
 			return
 		end
 
@@ -1254,7 +1345,7 @@ return function(ctx)
 			isLoco = st.attackDbMod.isLocomotionId(pure)
 		end
 		if isLoco then
-			st.seenTracks[track] = true
+			st.handledTracks[track] = true
 			return
 		end
 
@@ -1263,28 +1354,29 @@ return function(ctx)
 			return
 		end
 
-		-- Primary path: match by AnimationId (names are often just "Animation" on remotes).
+		-- Primary path: match by AnimationId (remote names are almost always "Animation").
 		local entry = db:lookup(id)
 
 		if not entry then
-			-- Only guess/log when the name clearly looks combat-related.
-			-- Generic name "Animation" without DB hit is ignored (likely idle/tool/etc).
-			if looksLikeCombatName(name) then
+			local combatName = looksLikeCombatName(name)
+			-- Remotes strip names → use Action priority as combat signal when ID unknown.
+			local actionPri = isActionPriority(track)
+			if combatName or (actionPri and pure ~= "" and flag("Gakuran Parry Unknown Combat", true)) then
 				if flag("Gakuran Combat Debug Logs", false) and flag("Gakuran Combat Log Unknown", true) then
-					debugLog("unknown combat anim", name, pure, attacker.Name)
+					debugLog("unknown combat anim", name, pure, attacker.Name, actionPri and "ActionPri" or "")
 					combatToast("warning", "Unknown Combat Anim", string.format(
 						"%s · id %s\nfrom %s · not in DB yet",
-						name ~= "" and name or "?",
+						name ~= "" and name or (actionPri and "Action" or "?"),
 						pure,
 						attacker.Name
 					), "combat-unknown-" .. pure)
 				end
 
-				if flag("Gakuran Parry Unknown Combat", true) then
+				if flag("Gakuran Parry Unknown Combat", true) or flag("Gakuran Combat Visualizer", false) then
 					local kind, delay = classifyFallback(name)
 					entry = {
 						id = pure,
-						name = name ~= "" and name or ("Unknown_" .. pure),
+						name = (name ~= "" and name ~= "Animation") and name or ("Unknown_" .. pure),
 						kind = kind,
 						hitDelay = delay,
 						window = 0.125,
@@ -1294,16 +1386,14 @@ return function(ctx)
 						db.count = (tonumber(db.count) or 0) + 1
 					end
 				else
-					st.seenTracks[track] = true
+					st.handledTracks[track] = true
 					return
 				end
 			else
-				st.seenTracks[track] = true
+				st.handledTracks[track] = true
 				return
 			end
 		end
-
-		st.seenTracks[track] = true
 
 		local myRoot = getLocalRoot()
 		local theirRoot = getRoot(getCharacter(attacker))
@@ -1312,16 +1402,31 @@ return function(ctx)
 		end
 
 		local dist = (theirRoot.Position - myRoot.Position).Magnitude
-		local range = math.max(
+		local parryRange = math.max(
 			numFlag("Gakuran Range Prefilter", 14),
 			numFlag("Gakuran Dodge Range", 12),
-			numFlag("Gakuran M2 Dodge Range", 14),
-			flag("Gakuran Combat Visualizer", false) and numFlag("Gakuran Viz Range", 28) or 0
+			numFlag("Gakuran M2 Dodge Range", 14)
 		)
-		if dist > range + 4 then
+		local vizRange = flag("Gakuran Combat Visualizer", false) and numFlag("Gakuran Viz Range", 28) or 0
+		local maxAwareness = math.max(parryRange, vizRange)
+
+		-- Visualizer can show further out than parry range.
+		if flag("Gakuran Combat Visualizer", false) and dist <= vizRange + 4 then
+			startVisualizer(attacker, track, entry)
+		end
+
+		if dist > maxAwareness + 4 then
+			-- Still in windup somewhere far — do NOT mark handled so closer approach re-fires.
 			return
 		end
 
+		if dist > parryRange + 4 then
+			-- Only viz-range: keep polling until in parry range or track ends.
+			return
+		end
+
+		-- In parry/dodge range → schedule once.
+		st.handledTracks[track] = true
 		debugLog("attack seen", entry.name, entry.kind, attacker.Name, string.format("%.1fst", dist))
 		scheduleResponse(attacker, track, entry)
 	end

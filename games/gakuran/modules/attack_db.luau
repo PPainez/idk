@@ -254,6 +254,8 @@ local SEED = {
 	["72258480653932"] = { name = "DirtyAttacker", kind = "M2", hitDelay = 0.40, window = 0.125 },
 	["84792890110748"] = { name = "DirtyVictim", kind = "M2", hitDelay = 0.40, window = 0.125 },
 	["128307941333158"] = { name = "GrappleVictim", kind = "M2", hitDelay = 0.40, window = 0.125 },
+	-- Striker Crit / Kure crit startup (shared id with Kure M2 already covered)
+	["103967416396872"] = { name = "Crit", kind = "M2", hitDelay = 0.40, window = 0.125 },
 }
 
 function AttackDB.isLocomotionId(id)
@@ -285,14 +287,27 @@ local function classify(name)
 	return kind, delay
 end
 
-local function isAttackName(name)
+local function isNonAttackCombatName(name)
 	if type(name) ~= "string" then
-		return false
+		return true
+	end
+	if name:find("Idle") or name:find("Walk") or name:find("Run") or name:find("Dash") then
+		return true
 	end
 	if name:find("Block") and not name:find("Guardbreak") then
+		return true
+	end
+	if name:find("Parry") then
+		return true
+	end
+	return false
+end
+
+local function isAttackName(name)
+	if type(name) ~= "string" or name == "" then
 		return false
 	end
-	if name:find("Idle") or name:find("Walk") or name:find("Run") or name:find("Parry") then
+	if isNonAttackCombatName(name) then
 		return false
 	end
 	return name:find("M1")
@@ -304,6 +319,10 @@ local function isAttackName(name)
 		or name:find("Attacker")
 		or name:find("Victim")
 		or name:find("Dirty")
+		or name:find("Crit")
+		or name:find("Grab")
+		or name:find("Slam")
+		or name:find("Startup")
 		or (name:find("Hit") ~= nil)
 end
 
@@ -408,10 +427,30 @@ function AttackDB.create()
 				local folder = anims:FindFirstChild(folderName)
 				if folder then
 					for _, d in ipairs(safeDescendants(folder)) do
-						pcall(addAnim, folderName, d)
+						if d:IsA("Animation") then
+							local n = d.Name
+							local id = AttackDB.extractId(d.AnimationId)
+							if id then
+								if isNonAttackCombatName(n) then
+									LOCOMOTION_IDS[id] = true
+								elseif isAttackName(n) then
+									pcall(addAnim, folderName, d)
+								else
+									-- Named oddly (e.g. Crit-only folders) — if under combat tree and not loco, keep as attack.
+									if n ~= "" and not isNonAttackCombatName(n) then
+										pcall(addAnim, folderName, d)
+									end
+								end
+							end
+						end
 					end
 				end
 			end
+		end
+
+		-- Never blackhole real seed attacks if a folder also tagged them as loco by mistake.
+		for id in pairs(SEED) do
+			LOCOMOTION_IDS[id] = nil
 		end
 
 		local n = 0
