@@ -495,7 +495,9 @@
 				if path:sub(-#self.fileext) == self.fileext then
 					local name = path:gsub("\\", "/"):match("([^/]+)$") or path
 					name = name:sub(1, #name - #self.fileext)
-					table.insert(files, name)
+					if name ~= "" and name ~= "autoload" then
+						table.insert(files, name)
+					end
 				end
 			end
 			table.sort(files)
@@ -504,65 +506,258 @@
 		return ok and result or {}
 	end
 
+	function library:NormalizeConfigName(name)
+		return tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub("[^%w%-%_ ]", ""):sub(1, 64)
+	end
+
+	function library:ResolveConfigName(name)
+		name = self:NormalizeConfigName(name)
+		if name ~= "" then
+			return name
+		end
+
+		local listOption = self.options["Config List"]
+		if listOption and type(listOption.value) == "string" and listOption.value ~= "" then
+			return self:NormalizeConfigName(listOption.value)
+		end
+
+		local flagged = self.flags["Config List"]
+		if type(flagged) == "string" and flagged ~= "" then
+			return self:NormalizeConfigName(flagged)
+		end
+
+		local typed = self.flags["Config Name"]
+		if type(typed) == "string" and typed ~= "" then
+			return self:NormalizeConfigName(typed)
+		end
+
+		local configs = self:GetConfigs()
+		return configs[1] or ""
+	end
+
+	function library:RefreshConfigList(selectName)
+		local configOption = self.options["Config List"]
+		if not configOption then
+			return self:GetConfigs()
+		end
+
+		local configs = self:GetConfigs()
+		for _, config in ipairs(configs) do
+			if not table.find(configOption.values, config) then
+				configOption:AddValue(config)
+			end
+		end
+		for index = #configOption.values, 1, -1 do
+			local existing = configOption.values[index]
+			if not table.find(configs, existing) then
+				configOption:RemoveValue(existing)
+			end
+		end
+
+		selectName = self:NormalizeConfigName(selectName)
+		if selectName ~= "" and table.find(configs, selectName) then
+			configOption:SetValue(selectName, true)
+		elseif type(configOption.value) == "string" and configOption.value ~= "" and table.find(configs, configOption.value) then
+			configOption:SetValue(configOption.value, true)
+		elseif configs[1] then
+			configOption:SetValue(configs[1], true)
+		end
+
+		return configs
+	end
+
+	function library:GetAutoloadConfig()
+		if not self.capabilities.filesystem then
+			return nil
+		end
+
+		local path = self.foldername .. "/autoload.txt"
+		local ok, name = pcall(function()
+			if not isfile(path) then
+				return nil
+			end
+			local contents = tostring(readfile(path))
+			local trimmed = contents:match("^%s*(.-)%s*$") or ""
+			trimmed = self:NormalizeConfigName(trimmed)
+			return trimmed ~= "" and trimmed or nil
+		end)
+		return ok and name or nil
+	end
+
+	function library:SetAutoloadConfig(config)
+		if not self.capabilities.filesystem then
+			return false, "filesystem unavailable"
+		end
+
+		config = self:NormalizeConfigName(config)
+		if config == "" then
+			return false, "invalid config name"
+		end
+		if not table.find(self:GetConfigs(), config) then
+			return false, "config does not exist"
+		end
+
+		local ok, err = pcall(function()
+			if not isfolder(self.foldername) then
+				makefolder(self.foldername)
+			end
+			writefile(self.foldername .. "/autoload.txt", config)
+		end)
+		return ok, err
+	end
+
+	function library:ClearAutoloadConfig()
+		if not self.capabilities.deletefile then
+			return false
+		end
+
+		local path = self.foldername .. "/autoload.txt"
+		local ok = pcall(function()
+			if isfile(path) then
+				delfile(path)
+			end
+		end)
+		return ok
+	end
+
+	function library:UpdateAutoloadLabel()
+		if not self.autoloadStatus then
+			return
+		end
+
+		local name = self:GetAutoloadConfig()
+		if name then
+			self.autoloadStatus.Text = "Auto load: " .. name
+		else
+			self.autoloadStatus.Text = "Auto load: none"
+		end
+	end
+
+	local function configToggleEnabled(saved)
+		if saved == nil then
+			return nil
+		end
+		if saved == true or saved == 1 or saved == "1" then
+			return true
+		end
+		if saved == false or saved == 0 or saved == "0" then
+			return false
+		end
+		return nil
+	end
+
+	function library:ApplyConfigData(configData)
+		if type(configData) ~= "table" then
+			return false, "invalid config data"
+		end
+
+		local applied = 0
+		for _, option in pairs(self.options) do
+			if option.hasInit and option.type ~= "button" and option.flag and not option.skipflag then
+				local saved = configData[option.flag]
+				local ok = pcall(function()
+					if option.type == "toggle" then
+						local enabled = configToggleEnabled(saved)
+						if enabled ~= nil then
+							option:SetState(enabled)
+							applied += 1
+						end
+					elseif option.type == "color" and saved ~= nil then
+						option:SetColor(saved)
+						local transparency = configData[option.flag .. " Transparency"]
+						if option.trans and transparency ~= nil then
+							option:SetTrans(transparency)
+						end
+						applied += 1
+					elseif option.type == "bind" and saved ~= nil then
+						option:SetKey(saved)
+						applied += 1
+					elseif saved ~= nil and option.SetValue then
+						option:SetValue(saved)
+						applied += 1
+					elseif saved ~= nil then
+						self.flags[option.flag] = saved
+						applied += 1
+					end
+				end)
+				if not ok then
+					self.flags[option.flag] = saved
+				end
+			end
+		end
+
+		return applied > 0, applied
+	end
+
 	function library:CreateConfig(config)
 		if not self.capabilities.filesystem then return false, "filesystem unavailable" end
-		config = tostring(config or ""):gsub("[^%w%-%_ ]", ""):sub(1, 64)
+		config = self:NormalizeConfigName(config)
 		if config == "" then return false, "invalid config name" end
 		local ok, err = pcall(function()
 			if not isfolder(self.foldername) then makefolder(self.foldername) end
 			writefile(self.foldername .. "/" .. config .. self.fileext, "{}")
 		end)
+		if ok then
+			self:RefreshConfigList(config)
+		end
 		return ok, err
 	end
 
 	function library:DeleteConfig(config)
 		if not self.capabilities.deletefile then return false, "deletefile unavailable" end
-		config = tostring(config or "")
+		config = self:NormalizeConfigName(config)
+		if config == "" then return false, "invalid config name" end
 		local path = self.foldername .. "/" .. config .. self.fileext
 		local ok, err = pcall(function()
 			if isfile(path) then delfile(path) end
 		end)
+		if ok then
+			local autoload = self:GetAutoloadConfig()
+			if autoload == config then
+				self:ClearAutoloadConfig()
+				self:UpdateAutoloadLabel()
+			end
+			self:RefreshConfigList()
+		end
 		return ok, err
 	end
 
 	function library:LoadConfig(config)
-		if not self.capabilities.filesystem or not table.find(self:GetConfigs(), config) then
-			return false
+		if not self.capabilities.filesystem then
+			return false, "filesystem unavailable"
 		end
 
-		local ok, Config = pcall(function()
+		config = self:ResolveConfigName(config)
+		if config == "" then
+			return false, "no config selected"
+		end
+		if not table.find(self:GetConfigs(), config) then
+			return false, "config not found"
+		end
+
+		local ok, configData = pcall(function()
 			return httpService:JSONDecode(readfile(self.foldername .. "/" .. config .. self.fileext))
 		end)
-		if not ok or type(Config) ~= "table" then return false end
-
-		for _, option in next, self.options do
-			if option.hasInit and option.type ~= "button" and option.flag and not option.skipflag then
-				pcall(function()
-					if option.type == "toggle" then
-						option:SetState(Config[option.flag] == 1)
-					elseif option.type == "color" and Config[option.flag] then
-						option:SetColor(Config[option.flag])
-						if option.trans and Config[option.flag .. " Transparency"] ~= nil then
-							option:SetTrans(Config[option.flag .. " Transparency"])
-						end
-					elseif option.type == "bind" and Config[option.flag] ~= nil then
-						option:SetKey(Config[option.flag])
-					elseif Config[option.flag] ~= nil then
-						option:SetValue(Config[option.flag])
-					end
-				end)
-			end
+		if not ok or type(configData) ~= "table" then
+			return false, "config file is invalid"
 		end
-		return true
+
+		local applied, count = self:ApplyConfigData(configData)
+		if not applied then
+			return false, "config is empty or incompatible"
+		end
+
+		self:RefreshConfigList(config)
+		return true, count
 	end
 
 	function library:SaveConfig(config)
-		if not self.capabilities.filesystem then return false end
-		config = tostring(config or ""):gsub("[^%w%-%_ ]", ""):sub(1, 64)
-		if config == "" then return false end
+		if not self.capabilities.filesystem then return false, "filesystem unavailable" end
+		config = self:ResolveConfigName(config)
+		if config == "" then return false, "no config selected" end
 
 		local Config = {}
-		for _, option in next, self.options do
+		for _, option in pairs(self.options) do
 			if option.type ~= "button" and option.flag and not option.skipflag then
 				if option.type == "toggle" then
 					Config[option.flag] = option.state and 1 or 0
@@ -577,11 +772,14 @@
 			end
 		end
 
-		local ok = pcall(function()
+		local ok, err = pcall(function()
 			if not isfolder(self.foldername) then makefolder(self.foldername) end
 			writefile(self.foldername .. "/" .. config .. self.fileext, httpService:JSONEncode(Config))
 		end)
-		return ok
+		if ok then
+			self:RefreshConfigList(config)
+		end
+		return ok, err
 	end
 
 	library.createLabel = function(option, parent)
