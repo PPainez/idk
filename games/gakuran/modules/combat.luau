@@ -72,6 +72,23 @@ return function(ctx)
 		state = false,
 		tip = "Keeps combat stance attribute equipped when possible",
 	})
+	parry:AddToggle({
+		text = "Ping Compensation",
+		flag = "Gakuran Parry Ping Comp",
+		state = true,
+		tip = "Starts block earlier by ~avg RTT/2 so the server sees the parry in time",
+	})
+	parry:AddSlider({
+		text = "Ping Comp Strength",
+		flag = "Gakuran Parry Ping Strength",
+		min = 0,
+		max = 100,
+		value = 85,
+		float = 5,
+		suffix = "%",
+		tip = "How much of measured ping is applied (100% ≈ full one-way lag)",
+	})
+	ctx.refs.combatPingLabel = parry:AddLabel("Ping: —")
 
 	local dodge = columns.combatRight:AddSection("Dodge")
 	dodge:AddToggle({
@@ -152,6 +169,9 @@ return function(ctx)
 	st.lastParryAt = 0
 	st.lastDodgeAt = 0
 	st.db = nil
+	st.pingSamples = {}
+	st.avgPingMs = 0
+	st.pingSampleAt = 0
 
 	-- Helpers ------------------------------------------------------------
 
@@ -179,6 +199,74 @@ return function(ctx)
 				ctx.refs.combatStatus.Text = "Status: " .. tostring(text)
 			end
 		end)
+	end
+
+	local function combatToast(typeName, title, message, key)
+		if not flag("Gakuran Combat Debug Logs", false) then
+			return
+		end
+		if type(ctx.toast) == "function" then
+			ctx.toast(typeName or "debug", message, {
+				title = title or "Combat",
+				channel = "combat",
+				key = key,
+				duration = 2.4,
+				group = true,
+				replace = true,
+			})
+			return
+		end
+		debugLog(title, message)
+	end
+
+	local function samplePingMs()
+		local ms = nil
+		pcall(function()
+			if type(LocalPlayer.GetNetworkPing) == "function" then
+				-- GetNetworkPing returns seconds (RTT).
+				ms = (LocalPlayer:GetNetworkPing() or 0) * 1000
+			end
+		end)
+		if not ms or ms <= 0 then
+			pcall(function()
+				local stats = game:GetService("Stats")
+				local item = stats.Network.ServerStatsItem["Data Ping"]
+				if item and item.GetValueString then
+					local text = item:GetValueString()
+					ms = tonumber((tostring(text):match("([%d%.]+)")))
+				elseif item and item.GetValue then
+					ms = tonumber(item:GetValue())
+				end
+			end)
+		end
+		if type(ms) ~= "number" or ms ~= ms or ms < 0 then
+			return st.avgPingMs or 0
+		end
+		-- Clamp absurd spikes from executor/stats glitches.
+		ms = math.clamp(ms, 0, 500)
+
+		local samples = st.pingSamples
+		table.insert(samples, ms)
+		while #samples > 12 do
+			table.remove(samples, 1)
+		end
+		local sum = 0
+		for _, value in ipairs(samples) do
+			sum = sum + value
+		end
+		st.avgPingMs = sum / math.max(#samples, 1)
+		return st.avgPingMs
+	end
+
+	local function pingCompensationSeconds()
+		if not flag("Gakuran Parry Ping Comp", true) then
+			return 0, st.avgPingMs or 0
+		end
+		local avgMs = samplePingMs()
+		local strength = math.clamp(numFlag("Gakuran Parry Ping Strength", 85), 0, 100) / 100
+		-- One-way lag approximation from RTT.
+		local oneWay = (avgMs / 1000) * 0.5 * strength
+		return oneWay, avgMs
 	end
 
 	local function findLoaded(name)
@@ -307,12 +395,22 @@ return function(ctx)
 		end
 
 		st.lastParryAt = os.clock()
-		setStatus(string.format(
+		local statusText = string.format(
 			"parried %s (%s)",
 			tostring(entry.name or "?"),
 			tostring(entry.kind or "?")
-		))
-		debugLog("parry", entry.name, entry.kind, entry.hitDelay)
+		)
+		setStatus(statusText)
+		debugLog("parry", entry.name, entry.kind, entry.hitDelay, entry._from or "")
+		combatToast("success", "Auto Parry", string.format(
+			"%s · %s · %s\nwait %.0fms · ping %.0fms%s",
+			tostring(entry.name or "attack"),
+			tostring(entry.kind or "?"),
+			tostring(entry._attackerName or "enemy"),
+			(tonumber(entry._waitMs) or 0),
+			(tonumber(entry._pingMs) or st.avgPingMs or 0),
+			entry._pingComp and " · ping-comp" or ""
+		), "combat-parry")
 
 		local hold = math.clamp(numFlag("Gakuran Parry Hold", 110), 40, 250) / 1000
 		task.delay(hold, function()
@@ -323,7 +421,7 @@ return function(ctx)
 		end)
 	end
 
-	local function doDodge(reason)
+	local function doDodge(reason, meta)
 		local evasive = getEvasiveApi()
 		if not evasive or type(evasive.Evasive) ~= "function" then
 			debugLog("Evasive API missing")
@@ -345,6 +443,13 @@ return function(ctx)
 			st.lastDodgeAt = os.clock()
 			setStatus("dodged · " .. tostring(reason or "rear"))
 			debugLog("dodge", reason)
+			meta = type(meta) == "table" and meta or {}
+			combatToast("info", "Auto Dodge", string.format(
+				"%s · %s\n%s",
+				tostring(meta.name or reason or "rear"),
+				tostring(meta.attackerName or "enemy"),
+				tostring(reason or "rear attack")
+			), "combat-dodge")
 		else
 			debugLog("dodge failed", err)
 		end
@@ -385,9 +490,24 @@ return function(ctx)
 			end)
 		end
 		local reaction = numFlag("Gakuran Reaction Offset", 40) / 1000
+		local pingComp, pingMs = pingCompensationSeconds()
 		-- Block slightly before predicted hitbox for the perfect window.
-		local target = hitDelay - reaction - (window * 0.35)
+		-- Ping compensation starts earlier so the server sees Blocking in time.
+		local target = hitDelay - reaction - (window * 0.35) - pingComp
 		local waitTime = math.max(0, target - elapsed)
+
+		if flag("Gakuran Combat Debug Logs", false) then
+			combatToast("debug", "Attack Seen", string.format(
+				"%s · %s from %s\nbase %.0fms · wait %.0fms · ping %.0fms%s",
+				tostring(dbEntry.name or "?"),
+				tostring(dbEntry.kind or "?"),
+				tostring(attacker.Name),
+				hitDelay * 1000,
+				waitTime * 1000,
+				pingMs,
+				pingComp > 0 and string.format(" (−%.0fms)", pingComp * 1000) or ""
+			), "combat-seen-" .. tostring(animId))
+		end
 
 		task.delay(waitTime, function()
 			st.pending[dedupe] = nil
@@ -405,9 +525,6 @@ return function(ctx)
 			local now = os.clock()
 			if autoParry and (now - (st.lastParryAt or 0)) < 0.12 then
 				return
-			end
-			if autoDodge and (now - (st.lastDodgeAt or 0)) < 0.18 then
-				-- still allow parry path below
 			end
 
 			local myChar = LocalPlayer.Character
@@ -428,16 +545,26 @@ return function(ctx)
 			local behind = isBehind(myRoot, theirRoot, rearAngle)
 			local dodgeRange = numFlag("Gakuran Dodge Range", 12)
 
+			local entryMeta = {
+				name = dbEntry.name,
+				kind = dbEntry.kind,
+				hitDelay = dbEntry.hitDelay,
+				_attackerName = attacker.DisplayName or attacker.Name,
+				_waitMs = waitTime * 1000,
+				_pingMs = pingMs,
+				_pingComp = pingComp > 0,
+			}
+
 			if autoDodge and behind and dist <= dodgeRange then
 				if (now - (st.lastDodgeAt or 0)) >= 0.18 then
-					doDodge(dbEntry.name or "rear")
+					doDodge(dbEntry.name or "rear", entryMeta)
 				end
 				return
 			end
 
 			if autoParry and dist <= range then
 				if not behind or not autoDodge then
-					doParry(dbEntry)
+					doParry(entryMeta)
 				end
 				return
 			end
@@ -446,7 +573,7 @@ return function(ctx)
 				local stunned = myChar
 					and (myChar:GetAttribute("Stunned") == true or myChar:GetAttribute("CantAnything") == true)
 				if stunned and (now - (st.lastDodgeAt or 0)) >= 0.18 then
-					doDodge("fallback")
+					doDodge("fallback", entryMeta)
 				end
 			end
 		end)
@@ -630,20 +757,35 @@ return function(ctx)
 			ctx.addConnection(Players.PlayerRemoving, unhookPlayer)
 		end)
 
-		-- Stay equipped / cooldown clear (throttled)
+		-- Stay equipped / cooldown clear / ping sample (throttled)
 		local maintAccum = 0
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
 				return
 			end
-			if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
-				return
-			end
 			maintAccum = maintAccum + (tonumber(dt) or 0)
-			if maintAccum < 0.2 then
+			if maintAccum < 0.25 then
 				return
 			end
 			maintAccum = 0
+
+			-- Keep ping average warm even before AP is enabled.
+			if flag("Gakuran Parry Ping Comp", true) or flag("Gakuran Auto Parry", false) then
+				local avg = samplePingMs()
+				if ctx.refs.combatPingLabel then
+					local comp = flag("Gakuran Parry Ping Comp", true)
+					local strength = numFlag("Gakuran Parry Ping Strength", 85)
+					ctx.refs.combatPingLabel.Text = string.format(
+						"Ping: %.0f ms avg%s",
+						avg,
+						comp and string.format(" · comp %d%% (−%.0fms)", strength, avg * 0.5 * (strength / 100)) or " · off"
+					)
+				end
+			end
+
+			if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
+				return
+			end
 			local character = LocalPlayer.Character
 			if flag("Gakuran No Parry Cooldown", false) then
 				clearBlockCooldown(character)

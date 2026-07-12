@@ -15,6 +15,7 @@ return function(ctx)
 
     local moduleNames = {
         "dev_shared.luau",
+        "notification_center.luau",
         "animation_viewer.luau",
         "animation_logger.luau",
         "remote_spy.luau",

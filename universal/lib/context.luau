@@ -44,6 +44,26 @@ local function createContext(deps)
 	}
 
 	function ctx.notify(message, duration)
+		-- Prefer stacked notification center when devtools loaded it.
+		local notifications = ctx.devtools
+			and ctx.devtools.apis
+			and ctx.devtools.apis.notifications
+		if type(notifications) == "table" and type(notifications.Info) == "function" then
+			local ok = pcall(function()
+				if type(message) == "table" then
+					notifications:Notify(message)
+				else
+					notifications:Info(tostring(message), {
+						duration = tonumber(duration) or 2,
+						channel = "system",
+					})
+				end
+			end)
+			if ok then
+				return
+			end
+		end
+
 		if library
 			and not library.unloaded
 			and library.SendNotification
@@ -57,6 +77,25 @@ local function createContext(deps)
 		end
 
 		print("[xanhub universal] " .. tostring(message))
+	end
+
+	function ctx.toast(typeName, message, options)
+		options = type(options) == "table" and options or {}
+		options.message = tostring(message or options.message or "")
+		options.type = typeName or options.type or "info"
+		local notifications = ctx.devtools
+			and ctx.devtools.apis
+			and ctx.devtools.apis.notifications
+		if type(notifications) == "table" and type(notifications.Notify) == "function" then
+			local ok = pcall(function()
+				notifications:Notify(options)
+			end)
+			if ok then
+				return true
+			end
+		end
+		ctx.notify(options.message, options.duration or 2)
+		return false
 	end
 
 	function ctx.addConnection(signal, callback)

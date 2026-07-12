@@ -56,6 +56,23 @@ return function(ctx)
     shared.accent = accent
 
     function shared.notify(message, duration)
+        local notifications = dev.apis and dev.apis.notifications
+        if type(notifications) == "table" and type(notifications.Info) == "function" then
+            local ok = pcall(function()
+                if type(message) == "table" then
+                    notifications:Notify(message)
+                else
+                    notifications:Info(tostring(message), {
+                        duration = tonumber(duration) or 3,
+                        channel = "system",
+                    })
+                end
+            end)
+            if ok then
+                return
+            end
+        end
+
         if type(ctx.notify) == "function" then
             ctx.notify(message, duration)
         elseif type(ctx.library.SendNotification) == "function" then
@@ -63,6 +80,24 @@ return function(ctx)
         else
             print("[xanhub dev] " .. tostring(message))
         end
+    end
+
+    -- Convenience for typed stacked toasts once notification_center is loaded.
+    function shared.toast(typeName, message, options)
+        options = type(options) == "table" and options or {}
+        options.message = tostring(message or options.message or "")
+        options.type = typeName or options.type or "info"
+        local notifications = dev.apis and dev.apis.notifications
+        if type(notifications) == "table" and type(notifications.Notify) == "function" then
+            local ok = pcall(function()
+                notifications:Notify(options)
+            end)
+            if ok then
+                return true
+            end
+        end
+        shared.notify(options.message, options.duration or 3)
+        return false
     end
 
     function shared.safeDestroy(object)

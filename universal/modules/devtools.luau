@@ -6,6 +6,7 @@
 
 local DEV_MODULE_PATHS = {
 	"devmodules/dev_shared.luau",
+	"devmodules/notification_center.luau",
 	"devmodules/animation_viewer.luau",
 	"devmodules/animation_logger.luau",
 	"devmodules/remote_spy.luau",
@@ -136,7 +137,7 @@ return function(ctx)
 				setEnabled(enabled == true)
 			end,
 		})
-		local devLabel = library.SettingsMain:AddLabel("Animation Logger, Viewer, Remote Spy, and more")
+		local devLabel = library.SettingsMain:AddLabel("Notifications, Animation Logger, Viewer, Remote Spy, and more")
 
 		do
 			local options = library.options or {}
@@ -173,6 +174,19 @@ return function(ctx)
 		if dev and dev.shared and library.base then
 			pcall(dev.shared.ensureOverlayGui)
 		end
+
+		-- Always arm the stacked notification service (combat/AP toasts, etc.)
+		-- even when the Dev Tools tab is hidden.
+		for _, module in ipairs(loadedModules) do
+			if type(module) == "table" and module.name == "notifications" and type(module.setup) == "function" then
+				local ok, err = pcall(module.setup)
+				if not ok then
+					warn("[xanhub dev] notifications setup failed: " .. tostring(err))
+				end
+				break
+			end
+		end
+
 		local enabled = library.flags[devToolsFlag] == true
 		setEnabled(enabled)
 	end
