@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 
-REM Push the entire repo to the original GitHub remote.
+REM Push the entire repo to GitHub (PPainez/idk).
 REM Usage:
 REM   push.bat
 REM   push.bat "your commit message"
@@ -25,6 +25,11 @@ if not exist ".git" (
     if errorlevel 1 goto :fail
     git branch -M "%BRANCH%"
     if errorlevel 1 goto :fail
+    git remote add origin "%REMOTE_URL%"
+    if errorlevel 1 goto :fail
+    git fetch origin
+    if errorlevel 1 goto :fail
+    git checkout -B "%BRANCH%" "origin/%BRANCH%" 2>nul
 )
 
 git remote get-url origin >nul 2>&1
@@ -33,10 +38,19 @@ if errorlevel 1 (
     git remote add origin "%REMOTE_URL%"
     if errorlevel 1 goto :fail
 ) else (
-    echo [setup] Using remote: %REMOTE_URL%
     git remote set-url origin "%REMOTE_URL%"
-    if errorlevel 1 goto :fail
 )
+
+REM Clean up any stuck rebase from a previous failed run
+if exist ".git\rebase-merge" (
+    echo [fix] Aborting stuck rebase from previous run...
+    git rebase --abort >nul 2>&1
+)
+
+echo.
+echo [fetch] Getting latest from GitHub...
+git fetch origin
+if errorlevel 1 goto :fail
 
 echo.
 echo [stage] Adding all files...
@@ -61,13 +75,20 @@ if errorlevel 1 (
 )
 
 echo.
-echo [sync] Pulling latest from origin/%BRANCH%...
-git pull --rebase origin "%BRANCH%"
+echo [sync] Rebasing onto origin/%BRANCH%...
+git rebase "origin/%BRANCH%"
 if errorlevel 1 (
     echo.
-    echo [error] Pull failed. Fix any merge conflicts, then run push.bat again.
-    pause
-    exit /b 1
+    echo [fix] Rebase failed. Resetting onto remote and keeping your files...
+    git rebase --abort >nul 2>&1
+    git reset --soft "origin/%BRANCH%"
+    if errorlevel 1 goto :fail
+    git diff --cached --quiet
+    if errorlevel 1 (
+        echo [commit] %COMMIT_MSG%
+        git commit -m "%COMMIT_MSG%"
+        if errorlevel 1 goto :fail
+    )
 )
 
 echo.
@@ -76,7 +97,7 @@ git push -u origin "%BRANCH%"
 if errorlevel 1 goto :fail
 
 echo.
-echo [done] Repository pushed successfully to %REMOTE_URL%
+echo [done] Pushed successfully to %REMOTE_URL%
 pause
 exit /b 0
 
