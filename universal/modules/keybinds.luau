@@ -68,5 +68,5 @@ return function(ctx)
 			ctx.setToggle("Universal Combat Aim Lock", enabled == true)
 		end,
 	})
-	visualBinds:AddLabel("Menu and panic binds are available in Settings")
+	visualBinds:AddLabel("Q = Aim Lock · H = ESP · V = Targeting")
 end

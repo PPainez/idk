@@ -84,6 +84,24 @@ local function createContext(deps)
 		)
 	end
 
+	function ctx.getPlayerLabel(player)
+		if not player then
+			return "Unknown"
+		end
+
+		local displayName = player.DisplayName
+		if type(displayName) ~= "string" or displayName == "" then
+			return player.Name
+		end
+
+		local trimmed = string.match(displayName, "^%s*(.-)%s*$") or displayName
+		if trimmed == "" or string.match(trimmed, "^%?+$") then
+			return player.Name
+		end
+
+		return trimmed
+	end
+
 	function ctx.getTargetPart(character)
 		if not character then
 			return nil

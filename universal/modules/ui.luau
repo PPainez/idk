@@ -36,6 +36,7 @@ return function(ctx)
 	intro:AddLabel("Loaded for: " .. tostring(game.Name))
 	intro:AddLabel("Place ID: " .. tostring(game.PlaceId))
 	intro:AddLabel("Universe ID: " .. tostring(game.GameId))
+	intro:AddLabel("Signature ESP · Targeting · Combat Aim · Movement")
 	intro:AddLabel("General client tools with complete unload restoration")
 
 	local quick = columns.homeRight:AddSection("Quick Actions")

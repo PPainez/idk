@@ -285,7 +285,7 @@ return function(ctx)
         value = 24,
         float = 1,
     })
-    local rendererStatus = performanceSection:AddLabel("Renderer: stable frame-sync / waiting")
+    local rendererStatus = performanceSection:AddLabel("Renderer: waiting for first frame")
 
     local colorsSection = ctx.columns.visualsRight:AddSection("ESP Colors")
     colorsSection:AddColor({text = "Enemy Color", flag = "Universal ESP Color", color = DEFAULT_ACCENT})
@@ -308,6 +308,7 @@ return function(ctx)
         local previewConnection
         local statusAccumulator = 0
         local previewHost
+        local renderErrorLogged = false
 
         overlayRoot.AnchorPoint = Vector2.new(0, 0)
         overlayRoot.Position = UDim2.fromScale(0, 0)
@@ -1055,7 +1056,7 @@ return function(ctx)
             if flag("Universal ESP Distance", true) then
                 table.insert(details, tostring(math.floor(distance + 0.5)) .. "m")
             end
-            if flag("Universal ESP Tool", true) then
+            if flag("Universal ESP Tool", false) then
                 local toolName = getToolName(entry.character)
                 if toolName then
                     table.insert(details, toolName)
@@ -1439,7 +1440,7 @@ return function(ctx)
 
             for index = 1, math.min(visibleCount, maximumPlayers) do
                 local candidate = candidates[index]
-                local ok = pcall(function()
+                local ok, err = pcall(function()
                     updateEntry(
                         candidate.entry,
                         candidate,
@@ -1456,6 +1457,10 @@ return function(ctx)
                 end)
                 if not ok then
                     hideEntry(candidate.entry)
+                    if not renderErrorLogged then
+                        renderErrorLogged = true
+                        warn("[xanhub esp] " .. tostring(err))
+                    end
                 end
             end
 
@@ -1463,10 +1468,11 @@ return function(ctx)
             if statusAccumulator >= 0.35 then
                 statusAccumulator = 0
                 rendererStatus.Text = string.format(
-                    "Renderer: stable-sync | %d visible | %d labels%s",
+                    "Renderer: camera-sync | %d/%d players | %d labels%s",
                     visibleCount,
+                    maximumPlayers,
                     labelLayout.count,
-                    labelLayout.hidden > 0 and (" | " .. tostring(labelLayout.hidden) .. " decluttered") or ""
+                    labelLayout.hidden > 0 and (" | " .. tostring(labelLayout.hidden) .. " hidden") or ""
                 )
             end
         end
@@ -1613,7 +1619,7 @@ return function(ctx)
             local glowStrength = clamp(numberFlag("Universal ESP Glow Strength", 52) / 100, 0, 1)
 
             preview.panelStroke.Color = color
-            local showFill = showBox and flag("Universal ESP Box Fill", true)
+            local showFill = showBox and flag("Universal ESP Box Fill", false)
             preview.box.Visible = showFull or showFill
             preview.box.BackgroundColor3 = color
             preview.box.BackgroundTransparency = showFill and 1 - fillOpacity or 1
@@ -1637,7 +1643,7 @@ return function(ctx)
             if flag("Universal ESP Distance", true) then
                 table.insert(previewDetails, "64m")
             end
-            if flag("Universal ESP Tool", true) then
+            if flag("Universal ESP Tool", false) then
                 table.insert(previewDetails, "Tool")
             end
             preview.details.Text = table.concat(previewDetails, "  •  ")

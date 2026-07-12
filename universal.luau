@@ -134,8 +134,8 @@ local updateController = moduleLoader.load("universal/modules/updates.luau")(ctx
 local featureSetups = {}
 for _, modulePath in ipairs({
 	"universal/modules/movement.luau",
-	"universal/modules/esp.luau",
 	"universal/modules/overlay.luau",
+	"universal/modules/esp.luau",
 	"universal/modules/world.luau",
 	"universal/modules/utility.luau",
 }) do
@@ -198,9 +198,9 @@ end)
 library:SetOpen(true)
 library:selectTab(ctx.tabs.home)
 if ctx.refs.runtimeStatus then
-	ctx.refs.runtimeStatus.Text = "Status: ready | Universal"
+	ctx.refs.runtimeStatus.Text = "Status: ready · Signature ESP active"
 end
-ctx.notify("Universal menu loaded", 3)
+ctx.notify("xanhub Universal ready", 3)
 print("[xanhub] Universal loaded for place", game.PlaceId)
 
 return {

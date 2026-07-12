@@ -94,7 +94,7 @@ return function(ctx)
 		flag = "Universal Combat Lock Only",
 		state = false,
 	})
-	combatAimSection:AddLabel("Aim Lock tracks smoothly; Silent Aim snaps instantly")
+	combatAimSection:AddLabel("Q toggles Aim Lock · Silent Aim snaps instantly")
 
 	local function setupOverlayRuntime()
 		local renderConnection
@@ -186,7 +186,7 @@ return function(ctx)
 			if syncESP then
 				targetMaximum = math.min(
 					targetMaximum,
-					math.max(50, tonumber(ctx.library.flags["Universal ESP Max Distance"]) or 650)
+					math.max(50, tonumber(ctx.library.flags["Universal ESP Max Distance"]) or 800)
 				)
 			end
 
@@ -374,7 +374,7 @@ return function(ctx)
 				if target and ctx.refs.targetingStatus then
 					ctx.refs.targetingStatus.Text = string.format(
 						"Target: %s | %dm",
-						target.player.DisplayName,
+						ctx.getPlayerLabel(target.player),
 						math.floor(target.worldDistance + 0.5)
 					)
 
@@ -424,9 +424,6 @@ return function(ctx)
 		ctx.library:AddCleanup(function()
 			ctx.disconnect(renderConnection)
 			ctx.state.aimTarget = nil
-			pcall(function()
-				root:Destroy()
-			end)
 		end)
 	end
 
