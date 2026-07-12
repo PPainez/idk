@@ -14,6 +14,7 @@ return function(ctx)
 	local columns = ctx.columns
 	local Players = ctx.Players
 	local RunService = ctx.RunService
+	local Workspace = ctx.Workspace or game:GetService("Workspace")
 	local LocalPlayer = Players.LocalPlayer
 
 	-- UI -----------------------------------------------------------------
@@ -205,18 +206,32 @@ return function(ctx)
 		if not flag("Gakuran Combat Debug Logs", false) then
 			return
 		end
+		local body = string.format("[%s] %s", tostring(title or "Combat"), tostring(message or ""))
+		debugLog(body)
+
+		local sent = false
 		if type(ctx.toast) == "function" then
-			ctx.toast(typeName or "debug", message, {
+			sent = ctx.toast(typeName or "info", message, {
 				title = title or "Combat",
 				channel = "combat",
 				key = key,
-				duration = 2.4,
+				duration = 2.6,
 				group = true,
 				replace = true,
-			})
-			return
+			}) == true
 		end
-		debugLog(title, message)
+
+		-- Always mirror to the built-in library toast as a reliable fallback.
+		if library and type(library.SendNotification) == "function" and library.base then
+			pcall(function()
+				library:SendNotification(2.4, body:gsub("\n", " · "))
+			end)
+			sent = true
+		end
+
+		if not sent then
+			print("[xanhub combat]", body)
+		end
 	end
 
 	local function samplePingMs()
@@ -296,6 +311,25 @@ return function(ctx)
 		return findLoaded("Evasive")
 	end
 
+	local function getCharacter(player)
+		if not player then
+			return nil
+		end
+		local character = player.Character
+		if character and character.Parent then
+			return character
+		end
+		-- Gakuran keeps rigs under Workspace.Players.<Name>
+		local folder = Workspace:FindFirstChild("Players")
+		if folder then
+			local named = folder:FindFirstChild(player.Name)
+			if named and named:FindFirstChildOfClass("Humanoid") then
+				return named
+			end
+		end
+		return character
+	end
+
 	local function getRoot(character)
 		if not character then
 			return nil
@@ -304,7 +338,7 @@ return function(ctx)
 	end
 
 	local function getLocalRoot()
-		return getRoot(LocalPlayer.Character)
+		return getRoot(getCharacter(LocalPlayer) or LocalPlayer.Character)
 	end
 
 	local function isBehind(localRoot, attackerRoot, rearAngleDeg)
@@ -383,7 +417,7 @@ return function(ctx)
 			return
 		end
 
-		local character = LocalPlayer.Character
+		local character = getCharacter(LocalPlayer) or LocalPlayer.Character
 		clearBlockCooldown(character)
 		stayEquipped(character)
 
@@ -527,9 +561,9 @@ return function(ctx)
 				return
 			end
 
-			local myChar = LocalPlayer.Character
+			local myChar = getCharacter(LocalPlayer) or LocalPlayer.Character
 			local myRoot = getRoot(myChar)
-			local theirRoot = getRoot(attacker.Character)
+			local theirRoot = getRoot(getCharacter(attacker))
 			if not myRoot or not theirRoot then
 				return
 			end
@@ -579,7 +613,7 @@ return function(ctx)
 		end)
 	end
 
-	local function onAnimationPlayed(attacker, track)
+	local function onAttackTrack(attacker, track)
 		if ctx.state.unloading then
 			return
 		end
@@ -589,12 +623,21 @@ return function(ctx)
 		if attacker == LocalPlayer then
 			return
 		end
-
-		local anim = track and track.Animation
-		if not anim then
+		if not track then
 			return
 		end
-		local id = anim.AnimationId
+
+		-- Deduplicate the same AnimationTrack instance.
+		st.seenTracks = st.seenTracks or setmetatable({}, { __mode = "k" })
+		if st.seenTracks[track] then
+			return
+		end
+
+		local anim = track.Animation
+		local id = anim and anim.AnimationId
+		if not id and type(track.AnimationId) == "string" then
+			id = track.AnimationId
+		end
 		local db = st.db
 		if not db then
 			return
@@ -602,11 +645,18 @@ return function(ctx)
 
 		local entry = db:lookup(id)
 		if not entry then
+			-- Unknown anim: still log when debug is on (helps expand DB).
+			if flag("Gakuran Combat Debug Logs", false) then
+				local pure = tostring(id or ""):match("%d+") or tostring(id)
+				debugLog("unknown anim", pure, attacker.Name)
+			end
 			return
 		end
 
+		st.seenTracks[track] = true
+
 		local myRoot = getLocalRoot()
-		local theirRoot = getRoot(attacker.Character)
+		local theirRoot = getRoot(getCharacter(attacker))
 		if not myRoot or not theirRoot then
 			return
 		end
@@ -621,6 +671,33 @@ return function(ctx)
 		scheduleResponse(attacker, track, entry)
 	end
 
+	local function collectPlayingTracks(character)
+		local tracks = {}
+		if not character then
+			return tracks
+		end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid and type(humanoid.GetPlayingAnimationTracks) == "function" then
+			pcall(function()
+				for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do
+					table.insert(tracks, track)
+				end
+			end)
+		end
+		local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+		if not animator then
+			animator = character:FindFirstChildWhichIsA("Animator", true)
+		end
+		if animator and type(animator.GetPlayingAnimationTracks) == "function" then
+			pcall(function()
+				for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+					table.insert(tracks, track)
+				end
+			end)
+		end
+		return tracks
+	end
+
 	local function hookCharacter(player, character)
 		if not character or player == LocalPlayer then
 			return
@@ -630,16 +707,17 @@ return function(ctx)
 			return
 		end
 		local animator = humanoid:FindFirstChildOfClass("Animator")
+			or character:FindFirstChildWhichIsA("Animator", true)
 		if not animator then
-			-- wait briefly for animator
 			task.spawn(function()
 				local t0 = os.clock()
-				while character.Parent and os.clock() - t0 < 5 do
+				while character.Parent and os.clock() - t0 < 6 do
 					animator = humanoid:FindFirstChildOfClass("Animator")
+						or character:FindFirstChildWhichIsA("Animator", true)
 					if animator then
 						break
 					end
-					task.wait(0.25)
+					task.wait(0.2)
 				end
 				if animator and character.Parent then
 					hookCharacter(player, character)
@@ -656,11 +734,11 @@ return function(ctx)
 			st.hooks[key] = nil
 		end
 
-		-- Must pass (signal, callback). Passing a Connection makes Connect() explode.
 		local conn = ctx.addConnection(animator.AnimationPlayed, function(track)
-			onAnimationPlayed(player, track)
+			onAttackTrack(player, track)
 		end)
 		st.hooks[key] = conn
+		debugLog("hooked", player.Name)
 	end
 
 	local function unhookPlayer(player)
@@ -670,6 +748,32 @@ return function(ctx)
 				st.hooks[key]:Disconnect()
 			end)
 			st.hooks[key] = nil
+		end
+	end
+
+	local function scanNearbyAttacks()
+		if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
+			return
+		end
+		local myRoot = getLocalRoot()
+		if not myRoot then
+			return
+		end
+		local range = math.max(numFlag("Gakuran Range Prefilter", 14), numFlag("Gakuran Dodge Range", 12)) + 6
+
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer then
+				local character = getCharacter(player)
+				local root = getRoot(character)
+				if character and root then
+					local dist = (root.Position - myRoot.Position).Magnitude
+					if dist <= range then
+						for _, track in ipairs(collectPlayingTracks(character)) do
+							onAttackTrack(player, track)
+						end
+					end
+				end
+			end
 		end
 	end
 
@@ -702,9 +806,11 @@ return function(ctx)
 			}
 		end
 
-		if ctx.refs.combatDbLabel then
-			ctx.refs.combatDbLabel.Text = "DB: " .. tostring(st.db.count or 0) .. " seed · rebuilding…"
-		end
+		pcall(function()
+			if ctx.refs.combatDbLabel then
+				ctx.refs.combatDbLabel.Text = "DB: " .. tostring(st.db.count or 0) .. " seed · rebuilding…"
+			end
+		end)
 		setStatus("idle · DB " .. tostring(st.db.count or 0) .. " (seed)")
 
 		-- Heavy work after hub + loader are fully up.
@@ -717,21 +823,26 @@ return function(ctx)
 				local ok, n = pcall(function()
 					return st.db:rebuild()
 				end)
-				if ok and ctx.refs.combatDbLabel then
-					ctx.refs.combatDbLabel.Text = "DB: " .. tostring(n) .. " attack anims"
-				end
+				pcall(function()
+					if ok and ctx.refs.combatDbLabel then
+						ctx.refs.combatDbLabel.Text = "DB: " .. tostring(n) .. " attack anims"
+					elseif ctx.refs.combatDbLabel then
+						ctx.refs.combatDbLabel.Text = "DB: " .. tostring(st.db.count or 0) .. " seed (rebuild failed)"
+					end
+				end)
 				if ok then
-					setStatus("ready · " .. tostring(n) .. " attacks indexed")
+					setStatus("ready · " .. tostring(n) .. " attacks · scan+hooks")
 				else
-					setStatus("DB rebuild failed · using seed")
+					setStatus("ready · seed DB · scan+hooks")
 					debugLog("rebuild failed", n)
 				end
 			end
 
 			for _, player in ipairs(Players:GetPlayers()) do
 				if player ~= LocalPlayer then
-					if player.Character then
-						pcall(hookCharacter, player, player.Character)
+					local character = getCharacter(player)
+					if character then
+						pcall(hookCharacter, player, character)
 					end
 					ctx.addConnection(player.CharacterAdded, function(character)
 						task.defer(function()
@@ -747,46 +858,60 @@ return function(ctx)
 						pcall(hookCharacter, player, character)
 					end)
 				end)
-				if player.Character then
-					task.defer(function()
-						pcall(hookCharacter, player, player.Character)
-					end)
-				end
+				task.defer(function()
+					local character = getCharacter(player)
+					if character then
+						pcall(hookCharacter, player, character)
+					end
+				end)
 			end)
 
 			ctx.addConnection(Players.PlayerRemoving, unhookPlayer)
 		end)
 
-		-- Stay equipped / cooldown clear / ping sample (throttled)
+		-- Stay equipped / cooldown clear / ping sample / attack scan
 		local maintAccum = 0
+		local scanAccum = 0
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
 				return
 			end
-			maintAccum = maintAccum + (tonumber(dt) or 0)
+			dt = tonumber(dt) or 0
+
+			-- High-rate track scan (AnimationPlayed alone is unreliable for remote combat).
+			if flag("Gakuran Auto Parry", false) or flag("Gakuran Auto Dodge", false) then
+				scanAccum = scanAccum + dt
+				if scanAccum >= 0.03 then
+					scanAccum = 0
+					pcall(scanNearbyAttacks)
+				end
+			end
+
+			maintAccum = maintAccum + dt
 			if maintAccum < 0.25 then
 				return
 			end
 			maintAccum = 0
 
-			-- Keep ping average warm even before AP is enabled.
 			if flag("Gakuran Parry Ping Comp", true) or flag("Gakuran Auto Parry", false) then
 				local avg = samplePingMs()
-				if ctx.refs.combatPingLabel then
-					local comp = flag("Gakuran Parry Ping Comp", true)
-					local strength = numFlag("Gakuran Parry Ping Strength", 85)
-					ctx.refs.combatPingLabel.Text = string.format(
-						"Ping: %.0f ms avg%s",
-						avg,
-						comp and string.format(" · comp %d%% (−%.0fms)", strength, avg * 0.5 * (strength / 100)) or " · off"
-					)
-				end
+				pcall(function()
+					if ctx.refs.combatPingLabel then
+						local comp = flag("Gakuran Parry Ping Comp", true)
+						local strength = numFlag("Gakuran Parry Ping Strength", 85)
+						ctx.refs.combatPingLabel.Text = string.format(
+							"Ping: %.0f ms avg%s",
+							avg,
+							comp and string.format(" · comp %d%% (−%.0fms)", strength, avg * 0.5 * (strength / 100)) or " · off"
+						)
+					end
+				end)
 			end
 
 			if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
 				return
 			end
-			local character = LocalPlayer.Character
+			local character = getCharacter(LocalPlayer) or LocalPlayer.Character
 			if flag("Gakuran No Parry Cooldown", false) then
 				clearBlockCooldown(character)
 			end

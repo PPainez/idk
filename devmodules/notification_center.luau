@@ -299,27 +299,60 @@ return function(ctx)
             return state.root
         end
 
-        local parent = ctx.library.base
-        if not parent then
-            local ok, result = pcall(function()
-                if type(gethui) == "function" then
-                    return gethui()
-                end
-                return game:GetService("CoreGui")
+        local parent = nil
+        local candidates = {}
+        if type(gethui) == "function" then
+            table.insert(candidates, function()
+                return gethui()
             end)
-            parent = ok and result or nil
+        end
+        table.insert(candidates, function()
+            return ctx.library and ctx.library.base
+        end)
+        table.insert(candidates, function()
+            local lp = game:GetService("Players").LocalPlayer
+            local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+            if not pg then
+                return nil
+            end
+            local gui = pg:FindFirstChild("xanhub_notification_host")
+            if not gui then
+                gui = Instance.new("ScreenGui")
+                gui.Name = "xanhub_notification_host"
+                gui.ResetOnSpawn = false
+                gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+                gui.IgnoreGuiInset = true
+                gui.DisplayOrder = 999999
+                gui.Parent = pg
+            end
+            return gui
+        end)
+        table.insert(candidates, function()
+            return game:GetService("CoreGui")
+        end)
+
+        for _, getter in ipairs(candidates) do
+            local ok, result = pcall(getter)
+            if ok and typeof(result) == "Instance" then
+                parent = result
+                break
+            end
         end
         assert(parent, "[xanhub notifications] no UI parent")
 
-        state.root = shared.create("Frame", {
-            Name = "xanhub_notification_overlay",
-            Size = UDim2.fromScale(1, 1),
-            BackgroundTransparency = 1,
-            BorderSizePixel = 0,
-            Active = false,
-            ZIndex = 7900,
-            Parent = parent,
-        })
+        local rootOk, root = pcall(function()
+            return shared.create("Frame", {
+                Name = "xanhub_notification_overlay",
+                Size = UDim2.fromScale(1, 1),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Active = false,
+                ZIndex = 7900,
+                Parent = parent,
+            })
+        end)
+        assert(rootOk and root, "[xanhub notifications] could not create overlay")
+        state.root = root
 
         state.stack = shared.create("Frame", {
             Name = "NotificationStack",
@@ -330,11 +363,12 @@ return function(ctx)
             Parent = state.root,
         })
 
-        state.layout = Instance.new("UIListLayout")
-        state.layout.FillDirection = Enum.FillDirection.Vertical
-        state.layout.SortOrder = Enum.SortOrder.LayoutOrder
-        state.layout.Padding = UDim.new(0, 8)
-        state.layout.Parent = state.stack
+        local layout = Instance.new("UIListLayout")
+        layout.FillDirection = Enum.FillDirection.Vertical
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Padding = UDim.new(0, 8)
+        layout.Parent = state.stack
+        state.layout = layout
         return state.root
     end
 
@@ -994,7 +1028,10 @@ return function(ctx)
             return nil
         end
         local options = normalizeOptions(input, extra)
-        if options.type == "debug" and flag("Dev Notifications Debug", true) == false then
+        -- Combat channel always allowed; generic debug still respects the toggle.
+        if options.type == "debug"
+            and options.channel ~= "combat"
+            and flag("Dev Notifications Debug", true) == false then
             return nil
         end
 
