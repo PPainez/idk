@@ -1,385 +1,962 @@
 --[[
     xanhub | universal | modules | esp
 
-    Player ESP UI and runtime.
+    Player ESP with box, skeleton, nametag, optional info card, and menu preview.
 ]]
 
+local R15_BONES = {
+	{"Head", "UpperTorso"},
+	{"UpperTorso", "LowerTorso"},
+	{"UpperTorso", "LeftUpperArm"},
+	{"LeftUpperArm", "LeftLowerArm"},
+	{"LeftLowerArm", "LeftHand"},
+	{"UpperTorso", "RightUpperArm"},
+	{"RightUpperArm", "RightLowerArm"},
+	{"RightLowerArm", "RightHand"},
+	{"LowerTorso", "LeftUpperLeg"},
+	{"LeftUpperLeg", "LeftLowerLeg"},
+	{"LeftLowerLeg", "LeftFoot"},
+	{"LowerTorso", "RightUpperLeg"},
+	{"RightUpperLeg", "RightLowerLeg"},
+	{"RightLowerLeg", "RightFoot"},
+}
+
+local R6_BONES = {
+	{"Head", "Torso"},
+	{"Torso", "Left Arm"},
+	{"Torso", "Right Arm"},
+	{"Torso", "Left Leg"},
+	{"Torso", "Right Leg"},
+}
+
+local BOUND_PARTS = {
+	"Head",
+	"UpperTorso",
+	"LowerTorso",
+	"Torso",
+	"LeftUpperArm",
+	"RightUpperArm",
+	"LeftLowerArm",
+	"RightLowerArm",
+	"LeftHand",
+	"RightHand",
+	"LeftUpperLeg",
+	"RightUpperLeg",
+	"LeftLowerLeg",
+	"RightLowerLeg",
+	"LeftFoot",
+	"RightFoot",
+	"Left Arm",
+	"Right Arm",
+	"Left Leg",
+	"Right Leg",
+	"HumanoidRootPart",
+}
+
 return function(ctx)
-    local espSection = ctx.columns.visualsLeft:AddSection("Player ESP")
-    espSection:AddToggle({text = "Enabled", flag = "Universal ESP", state = false})
-    espSection:AddToggle({text = "Highlights", flag = "Universal ESP Highlights", state = false})
-    espSection:AddToggle({text = "Names", flag = "Universal ESP Names", state = true})
-    espSection:AddToggle({text = "Health Bar", flag = "Universal ESP Health", state = true})
-    espSection:AddToggle({text = "Distance", flag = "Universal ESP Distance", state = true})
-    espSection:AddToggle({text = "Team Check", flag = "Universal ESP Team Check", state = false})
-    espSection:AddSlider({
-        text = "ESP Scale",
-        flag = "Universal ESP Scale",
-        min = 50,
-        max = 110,
-        value = 78,
-        float = 1,
-        suffix = "%",
-    })
-    espSection:AddSlider({
-        text = "Fade Start",
-        flag = "Universal ESP Fade Start",
-        min = 50,
-        max = 1200,
-        value = 250,
-        float = 10,
-        suffix = " studs",
-    })
-    espSection:AddSlider({
-        text = "Maximum Distance",
-        flag = "Universal ESP Max Distance",
-        min = 50,
-        max = 2000,
-        value = 650,
-        float = 10,
-        suffix = " studs",
-    })
-    espSection:AddColor({
-        text = "ESP Color",
-        flag = "Universal ESP Color",
-        color = Color3.fromRGB(0, 170, 255),
-    })
+	local espSection = ctx.columns.visualsLeft:AddSection("Player ESP")
+	espSection:AddToggle({text = "Enabled", flag = "Universal ESP", state = false})
+	espSection:AddToggle({text = "Box ESP", flag = "Universal ESP Box", state = true})
+	espSection:AddToggle({text = "Filled Box", flag = "Universal ESP Box Fill", state = false})
+	espSection:AddToggle({text = "Skeleton ESP", flag = "Universal ESP Skeleton", state = false})
+	espSection:AddToggle({text = "Nametag", flag = "Universal ESP Nametag", state = true})
+	espSection:AddToggle({text = "Tracer Line", flag = "Universal ESP Tracer", state = false})
+	espSection:AddToggle({text = "Info Card (Top Bar)", flag = "Universal ESP Info Card", state = false})
+	espSection:AddToggle({text = "Highlights", flag = "Universal ESP Highlights", state = false})
+	espSection:AddDivider("Info Card Details")
+	espSection:AddToggle({text = "Card Names", flag = "Universal ESP Names", state = true})
+	espSection:AddToggle({text = "Card Health Bar", flag = "Universal ESP Health", state = true})
+	espSection:AddToggle({text = "Card Distance", flag = "Universal ESP Distance", state = true})
+	espSection:AddToggle({text = "Team Check", flag = "Universal ESP Team Check", state = false})
+	espSection:AddSlider({
+		text = "Box Thickness",
+		flag = "Universal ESP Box Thickness",
+		min = 1,
+		max = 4,
+		value = 1.5,
+		float = 0.5,
+	})
+	espSection:AddSlider({
+		text = "Line Thickness",
+		flag = "Universal ESP Line Thickness",
+		min = 1,
+		max = 3,
+		value = 1.5,
+		float = 0.5,
+	})
+	espSection:AddSlider({
+		text = "Nametag Size",
+		flag = "Universal ESP Nametag Size",
+		min = 10,
+		max = 18,
+		value = 13,
+		float = 1,
+	})
+	espSection:AddSlider({
+		text = "Fade Start",
+		flag = "Universal ESP Fade Start",
+		min = 50,
+		max = 1200,
+		value = 250,
+		float = 10,
+		suffix = " studs",
+	})
+	espSection:AddSlider({
+		text = "Maximum Distance",
+		flag = "Universal ESP Max Distance",
+		min = 50,
+		max = 2000,
+		value = 650,
+		float = 10,
+		suffix = " studs",
+	})
+	espSection:AddColor({
+		text = "ESP Color",
+		flag = "Universal ESP Color",
+		color = Color3.fromRGB(0, 170, 255),
+	})
+	espSection:AddColor({
+		text = "Skeleton Color",
+		flag = "Universal ESP Skeleton Color",
+		color = Color3.fromRGB(0, 210, 255),
+	})
 
-    local function setupESPRuntime()
-        local updateConnection
-        local playerRemovingConnection
-        local accumulator = 0
+	local previewSection = ctx.columns.visualsRight:AddSection("ESP Preview")
+	previewSection:AddLabel("Live style preview")
+	previewSection:AddLabel("Nametag sits on the box top edge")
+	ctx.refs.espPreviewSection = previewSection
 
-        local function destroyEntry(player)
-            local entry = ctx.state.esp[player]
-            if not entry then
-                return
-            end
+	local function setupESPRuntime()
+		local renderConnection
+		local playerRemovingConnection
+		local previewConnection
 
-            if entry.highlight then
-                pcall(function()
-                    entry.highlight:Destroy()
-                end)
-            end
+		local hasDrawing = type(Drawing) == "table" and type(Drawing.new) == "function"
+		if not hasDrawing then
+			ctx.notify("Drawing API unavailable; box/skeleton ESP disabled", 4)
+		end
 
-            if entry.billboard then
-                pcall(function()
-                    entry.billboard:Destroy()
-                end)
-            end
+		local function flag(name, default)
+			local value = ctx.library.flags[name]
+			if type(value) == "boolean" then
+				return value
+			end
+			return default
+		end
 
-            ctx.state.esp[player] = nil
-        end
+		local function colorFlag(name, fallback)
+			local value = ctx.library.flags[name]
+			if typeof(value) == "Color3" then
+				return value
+			end
+			return fallback
+		end
 
-        local function createEntry(player, character)
-            destroyEntry(player)
+		local function numberFlag(name, default)
+			return tonumber(ctx.library.flags[name]) or default
+		end
 
-            local root = character:FindFirstChild("HumanoidRootPart")
-                or character:FindFirstChild("UpperTorso")
-                or character:FindFirstChild("Torso")
-                or character:FindFirstChild("Head")
+		local function newDrawing(className)
+			if not hasDrawing then
+				return nil
+			end
+			local ok, drawing = pcall(Drawing.new, className)
+			if ok then
+				drawing.Visible = false
+				return drawing
+			end
+			return nil
+		end
 
-            if not root then
-                return nil
-            end
+		local function hideDrawing(drawing)
+			if drawing then
+				drawing.Visible = false
+			end
+		end
 
-            local highlight = Instance.new("Highlight")
-            highlight.Name = "xanhub_universal_highlight"
-            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            highlight.FillTransparency = 0.92
-            highlight.OutlineTransparency = 0.28
-            highlight.Adornee = character
-            highlight.Enabled = false
-            highlight.Parent = character
+		local function destroyDrawings(drawings)
+			if not drawings then
+				return
+			end
+			for key, value in pairs(drawings) do
+				if type(value) == "table" then
+					for _, item in ipairs(value) do
+						pcall(function()
+							item:Remove()
+						end)
+					end
+				elseif value then
+					pcall(function()
+						value:Remove()
+					end)
+				end
+				drawings[key] = nil
+			end
+		end
 
-            local billboard = Instance.new("BillboardGui")
-            billboard.Name = "xanhub_universal_billboard"
-            billboard.Adornee = root
-            billboard.AlwaysOnTop = true
-            billboard.LightInfluence = 0
-            billboard.MaxDistance = 2000
-            billboard.Size = UDim2.fromOffset(156, 38)
-            billboard.StudsOffsetWorldSpace = Vector3.new(0, 3.15, 0)
-            billboard.Enabled = false
-            billboard.Parent = character
+		local function getBonePairs(character)
+			if character:FindFirstChild("UpperTorso") then
+				return R15_BONES
+			end
+			return R6_BONES
+		end
 
-            local card = Instance.new("Frame")
-            card.AnchorPoint = Vector2.new(0.5, 0.5)
-            card.Position = UDim2.fromScale(0.5, 0.5)
-            card.Size = UDim2.fromOffset(150, 34)
-            card.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
-            card.BackgroundTransparency = 0.18
-            card.BorderSizePixel = 0
-            card.ClipsDescendants = true
-            card.Parent = billboard
-            ctx.createRounded(card, 6)
+		local function getViewportBounds(camera, character)
+			local minX, minY = math.huge, math.huge
+			local maxX, maxY = -math.huge, -math.huge
+			local bestDepth = math.huge
+			local anyOnScreen = false
 
-            local scale = Instance.new("UIScale")
-            scale.Scale = 0.78
-            scale.Parent = card
+			for _, partName in ipairs(BOUND_PARTS) do
+				local part = character:FindFirstChild(partName)
+				if part and part:IsA("BasePart") then
+					local cframe = part.CFrame
+					local size = part.Size
+					for sx = -1, 1, 2 do
+						for sy = -1, 1, 2 do
+							for sz = -1, 1, 2 do
+								local world = cframe:PointToWorldSpace(Vector3.new(
+									size.X * 0.5 * sx,
+									size.Y * 0.5 * sy,
+									size.Z * 0.5 * sz
+								))
+								local point, onScreen = camera:WorldToViewportPoint(world)
+								if onScreen then
+									anyOnScreen = true
+									minX = math.min(minX, point.X)
+									minY = math.min(minY, point.Y)
+									maxX = math.max(maxX, point.X)
+									maxY = math.max(maxY, point.Y)
+									bestDepth = math.min(bestDepth, point.Z)
+								end
+							end
+						end
+					end
+				end
+			end
 
-            local stroke = Instance.new("UIStroke")
-            stroke.Color = Color3.fromRGB(0, 170, 255)
-            stroke.Transparency = 0.28
-            stroke.Thickness = 1
-            stroke.Parent = card
+			if not anyOnScreen then
+				return false
+			end
 
-            local accent = Instance.new("Frame")
-            accent.Size = UDim2.new(0, 2, 1, 0)
-            accent.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
-            accent.BorderSizePixel = 0
-            accent.Parent = card
+			local padding = 3
+			return true, {
+				topLeft = Vector2.new(minX - padding, minY - padding),
+				bottomRight = Vector2.new(maxX + padding, maxY + padding),
+				center = Vector2.new((minX + maxX) * 0.5, (minY + maxY) * 0.5),
+				topCenter = Vector2.new((minX + maxX) * 0.5, minY - padding),
+				bottomCenter = Vector2.new((minX + maxX) * 0.5, maxY + padding),
+				depth = bestDepth,
+			}
+		end
 
-            local targetMarker = Instance.new("Frame")
-            targetMarker.Position = UDim2.fromOffset(8, 8)
-            targetMarker.Size = UDim2.fromOffset(6, 6)
-            targetMarker.BackgroundColor3 = Color3.fromRGB(255, 82, 96)
-            targetMarker.BackgroundTransparency = 1
-            targetMarker.BorderSizePixel = 0
-            targetMarker.Visible = false
-            targetMarker.Parent = card
-            ctx.createRounded(targetMarker, 999)
+		local function ensureDrawings(entry)
+			entry.drawings = entry.drawings or {}
+			local drawings = entry.drawings
 
-            local targetMarkerStroke = Instance.new("UIStroke")
-            targetMarkerStroke.Color = Color3.fromRGB(255, 255, 255)
-            targetMarkerStroke.Transparency = 0.35
-            targetMarkerStroke.Thickness = 1
-            targetMarkerStroke.Parent = targetMarker
+			if not drawings.box then
+				drawings.box = newDrawing("Square")
+				drawings.boxFill = newDrawing("Square")
+				drawings.nametag = newDrawing("Text")
+				drawings.tracer = newDrawing("Line")
+				drawings.healthBg = newDrawing("Line")
+				drawings.healthFill = newDrawing("Line")
+				drawings.skeleton = {}
+			end
 
-            local nameLabel = Instance.new("TextLabel")
-            nameLabel.Position = UDim2.fromOffset(18, 3)
-            nameLabel.Size = UDim2.new(1, -62, 0, 15)
-            nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = player.DisplayName
-            nameLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
-            nameLabel.TextSize = 12
-            nameLabel.Font = Enum.Font.Code
-            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-            nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-            nameLabel.Parent = card
+			local needed = #getBonePairs(entry.character)
+			while #drawings.skeleton < needed do
+				table.insert(drawings.skeleton, newDrawing("Line"))
+			end
 
-            local distanceLabel = Instance.new("TextLabel")
-            distanceLabel.AnchorPoint = Vector2.new(1, 0)
-            distanceLabel.Position = UDim2.new(1, -7, 0, 3)
-            distanceLabel.Size = UDim2.fromOffset(42, 15)
-            distanceLabel.BackgroundTransparency = 1
-            distanceLabel.Text = "0m"
-            distanceLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
-            distanceLabel.TextSize = 10
-            distanceLabel.Font = Enum.Font.Code
-            distanceLabel.TextXAlignment = Enum.TextXAlignment.Right
-            distanceLabel.Parent = card
+			return drawings
+		end
 
-            local barBackground = Instance.new("Frame")
-            barBackground.Position = UDim2.fromOffset(8, 25)
-            barBackground.Size = UDim2.new(1, -16, 0, 3)
-            barBackground.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
-            barBackground.BorderSizePixel = 0
-            barBackground.Parent = card
-            ctx.createRounded(barBackground, 2)
+		local function destroyEntry(player)
+			local entry = ctx.state.esp[player]
+			if not entry then
+				return
+			end
 
-            local healthFill = Instance.new("Frame")
-            healthFill.Size = UDim2.fromScale(1, 1)
-            healthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
-            healthFill.BorderSizePixel = 0
-            healthFill.Parent = barBackground
-            ctx.createRounded(healthFill, 2)
+			if entry.highlight then
+				pcall(function()
+					entry.highlight:Destroy()
+				end)
+			end
 
-            local entry = {
-                character = character,
-                root = root,
-                highlight = highlight,
-                billboard = billboard,
-                scale = scale,
-                card = card,
-                stroke = stroke,
-                accent = accent,
-                targetMarker = targetMarker,
-                targetMarkerStroke = targetMarkerStroke,
-                name = nameLabel,
-                distance = distanceLabel,
-                healthBackground = barBackground,
-                health = healthFill,
-                currentScale = 0.78,
-                displayedHealth = 1,
-            }
+			if entry.billboard then
+				pcall(function()
+					entry.billboard:Destroy()
+				end)
+			end
 
-            ctx.state.esp[player] = entry
-            return entry
-        end
+			destroyDrawings(entry.drawings)
+			ctx.state.esp[player] = nil
+		end
 
-        local function setVisible(entry, visible, allowHighlight)
-            if entry.highlight then
-                entry.highlight.Enabled = visible
-                    and allowHighlight == true
-                    and ctx.library.flags["Universal ESP Highlights"] == true
-            end
-            if entry.billboard then
-                entry.billboard.Enabled = visible
-            end
-            if not visible and entry.targetMarker then
-                entry.targetMarker.Visible = false
-            end
-        end
+		local function createInfoCard(player, character, root)
+			local billboard = Instance.new("BillboardGui")
+			billboard.Name = "xanhub_universal_billboard"
+			billboard.Adornee = root
+			billboard.AlwaysOnTop = true
+			billboard.LightInfluence = 0
+			billboard.MaxDistance = 2000
+			billboard.Size = UDim2.fromOffset(156, 38)
+			billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.8, 0)
+			billboard.Enabled = false
+			billboard.Parent = character
 
-        local function update()
-            if ctx.state.unloading then
-                return
-            end
+			local card = Instance.new("Frame")
+			card.AnchorPoint = Vector2.new(0.5, 0.5)
+			card.Position = UDim2.fromScale(0.5, 0.5)
+			card.Size = UDim2.fromOffset(150, 34)
+			card.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
+			card.BackgroundTransparency = 0.18
+			card.BorderSizePixel = 0
+			card.ClipsDescendants = true
+			card.Parent = billboard
+			ctx.createRounded(card, 6)
 
-            local enabled = ctx.library.flags["Universal ESP"] == true
-            local localRoot = ctx.getRoot()
-            local maxDistance = math.max(50, tonumber(ctx.library.flags["Universal ESP Max Distance"]) or 650)
-            local fadeStart = math.clamp(
-                tonumber(ctx.library.flags["Universal ESP Fade Start"]) or 250,
-                0,
-                maxDistance - 1
-            )
-            local baseScale = math.clamp(
-                (tonumber(ctx.library.flags["Universal ESP Scale"]) or 78) / 100,
-                0.5,
-                1.1
-            )
-            local color = typeof(ctx.library.flags["Universal ESP Color"]) == "Color3"
-                and ctx.library.flags["Universal ESP Color"]
-                or Color3.fromRGB(0, 170, 255)
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = Color3.fromRGB(0, 170, 255)
+			stroke.Transparency = 0.28
+			stroke.Thickness = 1
+			stroke.Parent = card
 
-            for _, player in ipairs(ctx.Players:GetPlayers()) do
-                if player ~= ctx.LocalPlayer then
-                    local character = player.Character
-                    local humanoid = ctx.getHumanoid(character)
-                    local root = ctx.getRoot(character)
-                    local entry = ctx.state.esp[player]
+			local accent = Instance.new("Frame")
+			accent.Size = UDim2.new(0, 2, 1, 0)
+			accent.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+			accent.BorderSizePixel = 0
+			accent.Parent = card
 
-                    if character and root and humanoid and humanoid.Health > 0 then
-                        if not entry or entry.character ~= character or entry.root ~= root then
-                            entry = createEntry(player, character)
-                        end
-                    elseif entry then
-                        destroyEntry(player)
-                        entry = nil
-                    end
+			local targetMarker = Instance.new("Frame")
+			targetMarker.Position = UDim2.fromOffset(8, 8)
+			targetMarker.Size = UDim2.fromOffset(6, 6)
+			targetMarker.BackgroundColor3 = Color3.fromRGB(255, 82, 96)
+			targetMarker.BackgroundTransparency = 1
+			targetMarker.BorderSizePixel = 0
+			targetMarker.Visible = false
+			targetMarker.Parent = card
+			ctx.createRounded(targetMarker, 999)
 
-                    if entry then
-                        local distance = localRoot and (localRoot.Position - root.Position).Magnitude or math.huge
-                        local targetingEnabled = ctx.library.flags["Universal Aim Preview"] == true
-                        local isTarget = targetingEnabled and ctx.state.aimTarget == player
-                        local targetSync = ctx.library.flags["Universal Targeting Sync ESP"] ~= false
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Position = UDim2.fromOffset(18, 3)
+			nameLabel.Size = UDim2.new(1, -62, 0, 15)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Text = player.DisplayName
+			nameLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
+			nameLabel.TextSize = 12
+			nameLabel.Font = Enum.Font.Code
+			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+			nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+			nameLabel.Parent = card
 
-                        local espSameTeam = ctx.library.flags["Universal ESP Team Check"] == true
-                            and ctx.LocalPlayer.Team ~= nil
-                            and player.Team == ctx.LocalPlayer.Team
-                        local targetingTeamCheck
-                        if targetSync then
-                            targetingTeamCheck = ctx.library.flags["Universal ESP Team Check"] == true
-                        else
-                            targetingTeamCheck = ctx.library.flags["Universal Aim Team Check"] == true
-                        end
-                        local targetSameTeam = targetingTeamCheck
-                            and ctx.LocalPlayer.Team ~= nil
-                            and player.Team == ctx.LocalPlayer.Team
+			local distanceLabel = Instance.new("TextLabel")
+			distanceLabel.AnchorPoint = Vector2.new(1, 0)
+			distanceLabel.Position = UDim2.new(1, -7, 0, 3)
+			distanceLabel.Size = UDim2.fromOffset(42, 15)
+			distanceLabel.BackgroundTransparency = 1
+			distanceLabel.Text = "0m"
+			distanceLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
+			distanceLabel.TextSize = 10
+			distanceLabel.Font = Enum.Font.Code
+			distanceLabel.TextXAlignment = Enum.TextXAlignment.Right
+			distanceLabel.Parent = card
 
-                        local targetMaxDistance = targetSync
-                            and maxDistance
-                            or math.max(50, tonumber(ctx.library.flags["Universal Aim Max Distance"]) or 500)
-                        local visibleForESP = enabled and not espSameTeam and distance <= maxDistance
-                        local visibleForTarget = isTarget and not targetSameTeam and distance <= targetMaxDistance
-                        local visible = visibleForESP or visibleForTarget
-                        setVisible(entry, visible, visibleForESP)
+			local barBackground = Instance.new("Frame")
+			barBackground.Position = UDim2.fromOffset(8, 25)
+			barBackground.Size = UDim2.new(1, -16, 0, 3)
+			barBackground.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
+			barBackground.BorderSizePixel = 0
+			barBackground.Parent = card
+			ctx.createRounded(barBackground, 2)
 
-                        if visible then
-                            local displayMaxDistance = visibleForTarget and targetMaxDistance or maxDistance
-                            local displayFadeStart = math.min(fadeStart, displayMaxDistance - 1)
-                            local fade = math.clamp(
-                                (distance - displayFadeStart) / math.max(1, displayMaxDistance - displayFadeStart),
-                                0,
-                                1
-                            )
-                            local opacity = 1 - (fade * (isTarget and 0.42 or 0.72))
-                            local distanceScale = math.clamp(1 - (distance / displayMaxDistance) * 0.64, 0.34, 1)
-                            local wantedScale = baseScale * distanceScale * (isTarget and 1.08 or 1)
-                            entry.currentScale += (wantedScale - entry.currentScale) * 0.24
-                            entry.scale.Scale = entry.currentScale
-                            entry.billboard.MaxDistance = displayMaxDistance
+			local healthFill = Instance.new("Frame")
+			healthFill.Size = UDim2.fromScale(1, 1)
+			healthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
+			healthFill.BorderSizePixel = 0
+			healthFill.Parent = barBackground
+			ctx.createRounded(healthFill, 2)
 
-                            local configuredTargetColor = typeof(ctx.library.flags["Universal Aim Color"]) == "Color3"
-                                and ctx.library.flags["Universal Aim Color"]
-                                or Color3.fromRGB(255, 82, 96)
-                            local targetColor = targetSync and color or configuredTargetColor
-                            local displayColor = isTarget and targetColor or color
+			return billboard, card, stroke, accent, targetMarker, nameLabel, distanceLabel, barBackground, healthFill
+		end
 
-                            entry.highlight.FillColor = displayColor
-                            entry.highlight.OutlineColor = displayColor
-                            entry.highlight.FillTransparency = 0.92 + fade * 0.06
-                            entry.highlight.OutlineTransparency = 0.28 + fade * 0.55
+		local function createEntry(player, character)
+			destroyEntry(player)
 
-                            entry.stroke.Color = displayColor
-                            entry.stroke.Thickness = isTarget and 2 or 1
-                            entry.stroke.Transparency = isTarget and 0.08 or (0.28 + fade * 0.52)
-                            entry.accent.BackgroundColor3 = displayColor
-                            entry.accent.Size = UDim2.new(0, isTarget and 4 or 2, 1, 0)
-                            entry.accent.BackgroundTransparency = isTarget and 0 or (1 - opacity)
-                            entry.card.BackgroundTransparency = isTarget and 0.06 or (0.18 + fade * 0.58)
-                            entry.name.TextTransparency = isTarget and 0 or (1 - opacity)
-                            entry.name.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
-                            entry.distance.TextTransparency = 1 - opacity
-                            entry.healthBackground.BackgroundTransparency = 0.08 + fade * 0.66
-                            entry.health.BackgroundTransparency = 1 - opacity
+			local root = character:FindFirstChild("HumanoidRootPart")
+				or character:FindFirstChild("UpperTorso")
+				or character:FindFirstChild("Torso")
+				or character:FindFirstChild("Head")
 
-                            entry.targetMarker.Visible = isTarget
-                            entry.targetMarker.BackgroundColor3 = targetColor
-                            entry.targetMarker.BackgroundTransparency = isTarget
-                                and (0.08 + math.abs(math.sin(os.clock() * 5)) * 0.28)
-                                or 1
-                            entry.name.Text = player.DisplayName
-                            entry.name.Visible = isTarget or ctx.library.flags["Universal ESP Names"] == true
-                            entry.distance.Visible = ctx.library.flags["Universal ESP Distance"] == true
-                            entry.healthBackground.Visible = ctx.library.flags["Universal ESP Health"] == true
-                            entry.distance.Text = tostring(math.floor(distance + 0.5)) .. "m"
+			if not root then
+				return nil
+			end
 
-                            local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
-                            entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
-                            entry.health.Size = UDim2.new(entry.displayedHealth, 0, 1, 0)
-                            entry.health.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
-                        end
-                    end
-                end
-            end
-        end
+			local highlight = Instance.new("Highlight")
+			highlight.Name = "xanhub_universal_highlight"
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.FillTransparency = 0.92
+			highlight.OutlineTransparency = 0.28
+			highlight.Adornee = character
+			highlight.Enabled = false
+			highlight.Parent = character
 
-        updateConnection = ctx.addConnection(ctx.RunService.RenderStepped, function(deltaTime)
-            accumulator += deltaTime
-            if accumulator >= 1 / 30 then
-                accumulator = 0
-                update()
-            end
-        end)
+			local billboard, card, stroke, accent, targetMarker, nameLabel, distanceLabel, barBackground, healthFill =
+				createInfoCard(player, character, root)
 
-        playerRemovingConnection = ctx.addConnection(ctx.Players.PlayerRemoving, destroyEntry)
+			local entry = {
+				character = character,
+				root = root,
+				highlight = highlight,
+				billboard = billboard,
+				card = card,
+				stroke = stroke,
+				accent = accent,
+				targetMarker = targetMarker,
+				name = nameLabel,
+				distance = distanceLabel,
+				healthBackground = barBackground,
+				health = healthFill,
+				displayedHealth = 1,
+				drawings = nil,
+			}
 
-        local control = ctx.option("Universal ESP")
-        if control then
-            control.callback = function(enabled)
-                if not enabled then
-                    for _, entry in pairs(ctx.state.esp) do
-                        setVisible(entry, false, false)
-                    end
-                end
-            end
-        end
+			ctx.state.esp[player] = entry
+			return entry
+		end
 
-        ctx.library:AddCleanup(function()
-            ctx.disconnect(updateConnection)
-            ctx.disconnect(playerRemovingConnection)
-            local playersToRemove = {}
-            for player in pairs(ctx.state.esp) do
-                table.insert(playersToRemove, player)
-            end
-            for _, player in ipairs(playersToRemove) do
-                destroyEntry(player)
-            end
-        end)
-    end
+		local function updateInfoCard(entry, player, visible, displayColor, opacity, fade, isTarget, targetColor, distance, humanoid)
+			local showCard = visible and flag("Universal ESP Info Card", false)
+			entry.billboard.Enabled = showCard
+			if not showCard then
+				return
+			end
 
-    return { setup = setupESPRuntime }
+			entry.stroke.Color = displayColor
+			entry.stroke.Thickness = isTarget and 2 or 1
+			entry.stroke.Transparency = isTarget and 0.08 or (0.28 + fade * 0.52)
+			entry.accent.BackgroundColor3 = displayColor
+			entry.accent.Size = UDim2.new(0, isTarget and 4 or 2, 1, 0)
+			entry.accent.BackgroundTransparency = isTarget and 0 or (1 - opacity)
+			entry.card.BackgroundTransparency = isTarget and 0.06 or (0.18 + fade * 0.58)
+			entry.name.TextTransparency = isTarget and 0 or (1 - opacity)
+			entry.name.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
+			entry.distance.TextTransparency = 1 - opacity
+			entry.healthBackground.BackgroundTransparency = 0.08 + fade * 0.66
+			entry.health.BackgroundTransparency = 1 - opacity
+			entry.targetMarker.Visible = isTarget
+			entry.targetMarker.BackgroundColor3 = targetColor
+			entry.targetMarker.BackgroundTransparency = isTarget
+				and (0.08 + math.abs(math.sin(os.clock() * 5)) * 0.28)
+				or 1
+			entry.name.Text = player.DisplayName
+			entry.name.Visible = isTarget or flag("Universal ESP Names", true)
+			entry.distance.Visible = flag("Universal ESP Distance", true)
+			entry.healthBackground.Visible = flag("Universal ESP Health", true)
+			entry.distance.Text = tostring(math.floor(distance + 0.5)) .. "m"
+
+			local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
+			entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
+			entry.health.Size = UDim2.new(entry.displayedHealth, 0, 1, 0)
+			entry.health.BackgroundColor3 = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
+		end
+
+		local function updateScreenEsp(entry, player, camera, bounds, displayColor, skeletonColor, opacity, fade, distance, humanoid, isTarget)
+			local drawings = ensureDrawings(entry)
+			local boxThickness = numberFlag("Universal ESP Box Thickness", 1.5)
+			local lineThickness = numberFlag("Universal ESP Line Thickness", 1.5)
+			local nametagSize = numberFlag("Universal ESP Nametag Size", 13)
+			local showBox = flag("Universal ESP Box", true)
+			local showFill = flag("Universal ESP Box Fill", false)
+			local showSkeleton = flag("Universal ESP Skeleton", false)
+			local showNametag = flag("Universal ESP Nametag", true)
+			local showTracer = flag("Universal ESP Tracer", false)
+			local showHealth = flag("Universal ESP Health", true) and showNametag and not flag("Universal ESP Info Card", false)
+
+			local topLeft = bounds.topLeft
+			local bottomRight = bounds.bottomRight
+			local width = bottomRight.X - topLeft.X
+			local height = bottomRight.Y - topLeft.Y
+
+			if drawings.box then
+				drawings.box.Visible = showBox
+				drawings.box.Position = topLeft
+				drawings.box.Size = Vector2.new(width, height)
+				drawings.box.Color = displayColor
+				drawings.box.Thickness = boxThickness
+				drawings.box.Filled = false
+				drawings.box.Transparency = math.clamp(0.08 + fade * 0.45, 0.08, 0.9)
+			end
+
+			if drawings.boxFill then
+				drawings.boxFill.Visible = showBox and showFill
+				drawings.boxFill.Position = topLeft
+				drawings.boxFill.Size = Vector2.new(width, height)
+				drawings.boxFill.Color = displayColor
+				drawings.boxFill.Filled = true
+				drawings.boxFill.Thickness = 0
+				drawings.boxFill.Transparency = math.clamp(0.82 + fade * 0.12, 0.82, 0.96)
+			end
+
+			if drawings.tracer then
+				local viewport = camera.ViewportSize
+				drawings.tracer.Visible = showTracer
+				drawings.tracer.From = Vector2.new(viewport.X * 0.5, viewport.Y)
+				drawings.tracer.To = bounds.bottomCenter
+				drawings.tracer.Color = displayColor
+				drawings.tracer.Thickness = lineThickness
+				drawings.tracer.Transparency = math.clamp(0.2 + fade * 0.55, 0.2, 0.9)
+			end
+
+			if drawings.nametag then
+				drawings.nametag.Visible = showNametag
+				drawings.nametag.Text = player.DisplayName
+				drawings.nametag.Size = nametagSize
+				drawings.nametag.Center = true
+				drawings.nametag.Outline = true
+				drawings.nametag.Font = Drawing.Fonts and Drawing.Fonts.Monospace or 2
+				drawings.nametag.Position = bounds.topCenter - Vector2.new(0, nametagSize + 2)
+				drawings.nametag.Color = isTarget and Color3.fromRGB(255, 245, 245) or Color3.fromRGB(245, 247, 255)
+				drawings.nametag.Transparency = 1 - opacity
+			end
+
+			if drawings.healthBg and drawings.healthFill and showHealth then
+				local barWidth = math.clamp(width * 0.72, 34, 120)
+				local barY = bounds.topCenter.Y - nametagSize - 8
+				local barX = bounds.topCenter.X - barWidth * 0.5
+				local ratio = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
+				entry.displayedHealth += (ratio - entry.displayedHealth) * 0.28
+
+				drawings.healthBg.Visible = true
+				drawings.healthBg.From = Vector2.new(barX, barY)
+				drawings.healthBg.To = Vector2.new(barX + barWidth, barY)
+				drawings.healthBg.Color = Color3.fromRGB(28, 33, 43)
+				drawings.healthBg.Thickness = 3
+				drawings.healthBg.Transparency = 1 - opacity * 0.85
+
+				drawings.healthFill.Visible = true
+				drawings.healthFill.From = Vector2.new(barX, barY)
+				drawings.healthFill.To = Vector2.new(barX + barWidth * entry.displayedHealth, barY)
+				drawings.healthFill.Color = Color3.fromHSV(entry.displayedHealth * 0.33, 0.78, 1)
+				drawings.healthFill.Thickness = 3
+				drawings.healthFill.Transparency = 1 - opacity
+			else
+				hideDrawing(drawings.healthBg)
+				hideDrawing(drawings.healthFill)
+			end
+
+			local pairsList = getBonePairs(entry.character)
+			for index, line in ipairs(drawings.skeleton) do
+				local pair = pairsList[index]
+				if not pair or not showSkeleton then
+					hideDrawing(line)
+				else
+					local a = entry.character:FindFirstChild(pair[1])
+					local b = entry.character:FindFirstChild(pair[2])
+					if a and b and a:IsA("BasePart") and b:IsA("BasePart") then
+						local ap, aOn = camera:WorldToViewportPoint(a.Position)
+						local bp, bOn = camera:WorldToViewportPoint(b.Position)
+						if aOn and bOn then
+							line.Visible = true
+							line.From = Vector2.new(ap.X, ap.Y)
+							line.To = Vector2.new(bp.X, bp.Y)
+							line.Color = skeletonColor
+							line.Thickness = lineThickness
+							line.Transparency = math.clamp(0.12 + fade * 0.5, 0.12, 0.9)
+						else
+							hideDrawing(line)
+						end
+					else
+						hideDrawing(line)
+					end
+				end
+			end
+
+			if showNametag and flag("Universal ESP Distance", true) and drawings.nametag then
+				drawings.nametag.Text = string.format("%s  [%dm]", player.DisplayName, math.floor(distance + 0.5))
+			end
+		end
+
+		local function hideEntryDrawings(entry)
+			if entry.highlight then
+				entry.highlight.Enabled = false
+			end
+			if entry.billboard then
+				entry.billboard.Enabled = false
+			end
+			destroyDrawings(entry.drawings)
+			entry.drawings = nil
+		end
+
+		local function shouldShowPlayer(player, distance, enabled, isTarget, espSameTeam, targetSameTeam, maxDistance, targetMaxDistance)
+			local visibleForESP = enabled and not espSameTeam and distance <= maxDistance
+			local visibleForTarget = isTarget and not targetSameTeam and distance <= targetMaxDistance
+			return visibleForESP or visibleForTarget, visibleForESP
+		end
+
+		local function render()
+			if ctx.state.unloading then
+				return
+			end
+
+			local camera = ctx.Workspace.CurrentCamera
+			if not camera then
+				return
+			end
+
+			local enabled = flag("Universal ESP", false)
+			local localRoot = ctx.getRoot()
+			local maxDistance = math.max(50, numberFlag("Universal ESP Max Distance", 650))
+			local fadeStart = math.clamp(numberFlag("Universal ESP Fade Start", 250), 0, maxDistance - 1)
+			local color = colorFlag("Universal ESP Color", Color3.fromRGB(0, 170, 255))
+			local skeletonColor = colorFlag("Universal ESP Skeleton Color", Color3.fromRGB(0, 210, 255))
+
+			for _, player in ipairs(ctx.Players:GetPlayers()) do
+				if player ~= ctx.LocalPlayer then
+					local character = player.Character
+					local humanoid = ctx.getHumanoid(character)
+					local root = ctx.getRoot(character)
+					local entry = ctx.state.esp[player]
+
+					if character and root and humanoid and humanoid.Health > 0 then
+						if not entry or entry.character ~= character or entry.root ~= root then
+							entry = createEntry(player, character)
+						end
+					elseif entry then
+						destroyEntry(player)
+						entry = nil
+					end
+
+					if entry then
+						local distance = localRoot and (localRoot.Position - root.Position).Magnitude or math.huge
+						local targetingEnabled = flag("Universal Aim Preview", false)
+						local isTarget = targetingEnabled and ctx.state.aimTarget == player
+						local targetSync = ctx.library.flags["Universal Targeting Sync ESP"] ~= false
+
+						local espSameTeam = flag("Universal ESP Team Check", false)
+							and ctx.LocalPlayer.Team ~= nil
+							and player.Team == ctx.LocalPlayer.Team
+						local targetingTeamCheck
+						if targetSync then
+							targetingTeamCheck = flag("Universal ESP Team Check", false)
+						else
+							targetingTeamCheck = flag("Universal Aim Team Check", true)
+						end
+						local targetSameTeam = targetingTeamCheck
+							and ctx.LocalPlayer.Team ~= nil
+							and player.Team == ctx.LocalPlayer.Team
+
+						local targetMaxDistance = targetSync
+							and maxDistance
+							or math.max(50, numberFlag("Universal Aim Max Distance", 500))
+
+						local visible, visibleForESP = shouldShowPlayer(
+							player,
+							distance,
+							enabled,
+							isTarget,
+							espSameTeam,
+							targetSameTeam,
+							maxDistance,
+							targetMaxDistance
+						)
+
+						if not visible then
+							if entry.highlight then
+								entry.highlight.Enabled = false
+							end
+							if entry.billboard then
+								entry.billboard.Enabled = false
+							end
+							if entry.drawings then
+								for key, value in pairs(entry.drawings) do
+									if type(value) == "table" then
+										for _, item in ipairs(value) do
+											hideDrawing(item)
+										end
+									else
+										hideDrawing(value)
+									end
+								end
+							end
+						else
+							local displayMaxDistance = isTarget and not enabled and targetMaxDistance or maxDistance
+							local displayFadeStart = math.min(fadeStart, displayMaxDistance - 1)
+							local fade = math.clamp(
+								(distance - displayFadeStart) / math.max(1, displayMaxDistance - displayFadeStart),
+								0,
+								1
+							)
+							local opacity = 1 - (fade * (isTarget and 0.42 or 0.72))
+
+							local configuredTargetColor = colorFlag("Universal Aim Color", Color3.fromRGB(255, 82, 96))
+							local targetColor = targetSync and color or configuredTargetColor
+							local displayColor = isTarget and targetColor or color
+
+							entry.highlight.Enabled = visibleForESP and flag("Universal ESP Highlights", false)
+							entry.highlight.FillColor = displayColor
+							entry.highlight.OutlineColor = displayColor
+							entry.highlight.FillTransparency = 0.92 + fade * 0.06
+							entry.highlight.OutlineTransparency = 0.28 + fade * 0.55
+
+							local onScreen, bounds = getViewportBounds(camera, character)
+							if onScreen and hasDrawing then
+								updateScreenEsp(
+									entry,
+									player,
+									camera,
+									bounds,
+									displayColor,
+									skeletonColor,
+									opacity,
+									fade,
+									distance,
+									humanoid,
+									isTarget
+								)
+							else
+								if entry.drawings then
+									for key, value in pairs(entry.drawings) do
+										if type(value) == "table" then
+											for _, item in ipairs(value) do
+												hideDrawing(item)
+											end
+										else
+											hideDrawing(value)
+										end
+									end
+								end
+							end
+
+							updateInfoCard(entry, player, visible, displayColor, opacity, fade, isTarget, targetColor, distance, humanoid)
+						end
+					end
+				end
+			end
+		end
+
+		local preview = {
+			root = nil,
+			box = nil,
+			boxFill = nil,
+			nametag = nil,
+			healthBg = nil,
+			healthFill = nil,
+			skeleton = {},
+			silhouette = {},
+		}
+
+		local function createPreviewLine(parent, color, thickness)
+			local line = Instance.new("Frame")
+			line.BackgroundColor3 = color
+			line.BorderSizePixel = 0
+			line.AnchorPoint = Vector2.new(0.5, 0.5)
+			line.Size = UDim2.fromOffset(0, thickness)
+			line.Parent = parent
+			return line
+		end
+
+		local function buildPreview()
+			local section = ctx.refs.espPreviewSection
+			if not section or not section.content or preview.root then
+				return
+			end
+
+			local host = Instance.new("Frame")
+			host.Name = "ESPPreviewHost"
+			host.BackgroundTransparency = 1
+			host.Size = UDim2.new(1, -8, 0, 220)
+			host.Parent = section.content
+
+			local panel = Instance.new("Frame")
+			panel.Name = "ESPPreviewPanel"
+			panel.Size = UDim2.new(1, 0, 1, 0)
+			panel.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
+			panel.BorderSizePixel = 0
+			panel.Parent = host
+			ctx.createRounded(panel, 8)
+
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = Color3.fromRGB(0, 170, 255)
+			stroke.Transparency = 0.45
+			stroke.Parent = panel
+
+			local stage = Instance.new("Frame")
+			stage.Name = "Stage"
+			stage.AnchorPoint = Vector2.new(0.5, 0.5)
+			stage.Position = UDim2.fromScale(0.5, 0.56)
+			stage.Size = UDim2.fromOffset(88, 150)
+			stage.BackgroundTransparency = 1
+			stage.Parent = panel
+
+			local function part(name, size, position, round)
+				local frame = Instance.new("Frame")
+				frame.Name = name
+				frame.Size = size
+				frame.Position = position
+				frame.BackgroundColor3 = Color3.fromRGB(24, 30, 42)
+				frame.BackgroundTransparency = 0.08
+				frame.BorderSizePixel = 0
+				frame.Parent = stage
+				ctx.createRounded(frame, round or 4)
+				table.insert(preview.silhouette, frame)
+				return frame
+			end
+
+			part("Head", UDim2.fromOffset(24, 24), UDim2.fromOffset(32, 0), 999)
+			part("Torso", UDim2.fromOffset(34, 48), UDim2.fromOffset(27, 28), 6)
+			part("LeftArm", UDim2.fromOffset(12, 40), UDim2.fromOffset(12, 32), 4)
+			part("RightArm", UDim2.fromOffset(12, 40), UDim2.fromOffset(64, 32), 4)
+			part("LeftLeg", UDim2.fromOffset(14, 48), UDim2.fromOffset(30, 78), 4)
+			part("RightLeg", UDim2.fromOffset(14, 48), UDim2.fromOffset(44, 78), 4)
+
+			preview.root = stage
+			preview.box = Instance.new("Frame")
+			preview.box.Name = "PreviewBox"
+			preview.box.BackgroundTransparency = 1
+			preview.box.Size = UDim2.fromOffset(74, 132)
+			preview.box.Position = UDim2.fromOffset(7, -6)
+			preview.box.Parent = stage
+
+			local boxStroke = Instance.new("UIStroke")
+			boxStroke.Thickness = 1.5
+			boxStroke.Color = Color3.fromRGB(0, 170, 255)
+			boxStroke.Parent = preview.box
+
+			preview.boxFill = Instance.new("Frame")
+			preview.boxFill.Size = UDim2.fromScale(1, 1)
+			preview.boxFill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+			preview.boxFill.BackgroundTransparency = 0.9
+			preview.boxFill.BorderSizePixel = 0
+			preview.boxFill.Parent = preview.box
+			ctx.createRounded(preview.boxFill, 4)
+
+			preview.nametag = Instance.new("TextLabel")
+			preview.nametag.BackgroundTransparency = 1
+			preview.nametag.Size = UDim2.new(1, 0, 0, 14)
+			preview.nametag.Position = UDim2.fromOffset(0, -18)
+			preview.nametag.Font = Enum.Font.Code
+			preview.nametag.TextSize = 12
+			preview.nametag.Text = "Preview"
+			preview.nametag.TextColor3 = Color3.fromRGB(245, 247, 255)
+			preview.nametag.Parent = preview.box
+
+			preview.healthBg = Instance.new("Frame")
+			preview.healthBg.BackgroundColor3 = Color3.fromRGB(28, 33, 43)
+			preview.healthBg.BorderSizePixel = 0
+			preview.healthBg.Size = UDim2.fromOffset(54, 3)
+			preview.healthBg.Position = UDim2.fromOffset(10, -8)
+			preview.healthBg.Parent = preview.box
+			ctx.createRounded(preview.healthBg, 2)
+
+			preview.healthFill = Instance.new("Frame")
+			preview.healthFill.BackgroundColor3 = Color3.fromRGB(80, 225, 115)
+			preview.healthFill.BorderSizePixel = 0
+			preview.healthFill.Size = UDim2.new(0.72, 0, 1, 0)
+			preview.healthFill.Parent = preview.healthBg
+			ctx.createRounded(preview.healthFill, 2)
+
+			local skeletonPairs = {
+				{Vector2.new(44, 12), Vector2.new(44, 40)},
+				{Vector2.new(44, 40), Vector2.new(44, 72)},
+				{Vector2.new(44, 34), Vector2.new(18, 52)},
+				{Vector2.new(44, 34), Vector2.new(70, 52)},
+				{Vector2.new(18, 52), Vector2.new(18, 84)},
+				{Vector2.new(70, 52), Vector2.new(70, 84)},
+				{Vector2.new(37, 72), Vector2.new(37, 118)},
+				{Vector2.new(51, 72), Vector2.new(51, 118)},
+			}
+
+			for index, pair in ipairs(skeletonPairs) do
+				local line = createPreviewLine(stage, Color3.fromRGB(0, 210, 255), 1)
+				local delta = pair[2] - pair[1]
+				local length = delta.Magnitude
+				local midpoint = pair[1] + delta / 2
+				line.Position = UDim2.fromOffset(midpoint.X, midpoint.Y)
+				line.Size = UDim2.fromOffset(length, 1)
+				line.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+				preview.skeleton[index] = line
+			end
+		end
+
+		local function updatePreview()
+			if not preview.root then
+				return
+			end
+
+			local color = colorFlag("Universal ESP Color", Color3.fromRGB(0, 170, 255))
+			local skeletonColor = colorFlag("Universal ESP Skeleton Color", Color3.fromRGB(0, 210, 255))
+			local showBox = flag("Universal ESP Box", true)
+			local showFill = flag("Universal ESP Box Fill", false)
+			local showSkeleton = flag("Universal ESP Skeleton", false)
+			local showNametag = flag("Universal ESP Nametag", true)
+			local showHealth = flag("Universal ESP Health", true) and not flag("Universal ESP Info Card", false)
+
+			preview.box.Visible = showBox
+			preview.boxFill.Visible = showBox and showFill
+			preview.nametag.Visible = showNametag
+			preview.healthBg.Visible = showHealth
+			preview.healthFill.Visible = showHealth
+
+			local boxStroke = preview.box:FindFirstChildOfClass("UIStroke")
+			if boxStroke then
+				boxStroke.Color = color
+			end
+			preview.boxFill.BackgroundColor3 = color
+			preview.nametag.Text = showNametag and "Preview" or ""
+			preview.nametag.TextSize = numberFlag("Universal ESP Nametag Size", 13)
+
+			for _, line in ipairs(preview.skeleton) do
+				line.Visible = showSkeleton
+				line.BackgroundColor3 = skeletonColor
+			end
+		end
+
+		renderConnection = ctx.addConnection(ctx.RunService.RenderStepped, function()
+			render()
+		end)
+
+		playerRemovingConnection = ctx.addConnection(ctx.Players.PlayerRemoving, destroyEntry)
+
+		previewConnection = ctx.addConnection(ctx.RunService.Heartbeat, function()
+			if not preview.root then
+				buildPreview()
+			end
+			updatePreview()
+		end)
+
+		local control = ctx.option("Universal ESP")
+		if control then
+			control.callback = function(enabled)
+				if not enabled then
+					for _, entry in pairs(ctx.state.esp) do
+						hideEntryDrawings(entry)
+					end
+				end
+			end
+		end
+
+		ctx.library:AddCleanup(function()
+			ctx.disconnect(renderConnection)
+			ctx.disconnect(playerRemovingConnection)
+			ctx.disconnect(previewConnection)
+
+			if preview.root and preview.root.Parent then
+				pcall(function()
+					preview.root.Parent.Parent:Destroy()
+				end)
+			end
+
+			local playersToRemove = {}
+			for player in pairs(ctx.state.esp) do
+				table.insert(playersToRemove, player)
+			end
+			for _, player in ipairs(playersToRemove) do
+				destroyEntry(player)
+			end
+		end)
+	end
+
+	return { setup = setupESPRuntime }
 end
