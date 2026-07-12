@@ -45,7 +45,7 @@ end
 
 -- Place-specific scripts. This is the usual table to edit.
 local FEATURED_PLACES = {
-    -- [1234567890] = {name = "Gakuran", file = "gakuran.luau"},
+    [128736949265057] = { name = "Gakuran", file = "gakuran.luau" },
 }
 
 -- Optional universe-wide scripts. Useful when one game has several places.

@@ -125,21 +125,27 @@ return function(ctx)
 
 	addExecutorSection()
 
+	local devToolsFlag = ctx.gakuran and "Gakuran Dev Tools" or "Universal Dev Tools"
+
 	if library.SettingsMain then
 		local devToggle = library.SettingsMain:AddToggle({
 			text = "Enable Dev Tools Tab",
-			flag = "Universal Dev Tools",
+			flag = devToolsFlag,
 			state = false,
 			callback = function(enabled)
 				setEnabled(enabled == true)
 			end,
 		})
-		local devLabel = library.SettingsMain:AddLabel("Remote Spy, Inspector, Profiler, and more")
+		local devLabel = library.SettingsMain:AddLabel("Animation Logger, Viewer, Remote Spy, and more")
 
 		do
 			local options = library.options or {}
 			local checkOption = options["Universal Check for Updates"]
-			local basePosition = (checkOption and tonumber(checkOption.position) or 0) + 2
+			local unloadOption = options["Unload xanhub"]
+			local basePosition = (unloadOption and tonumber(unloadOption.position) or 0) + 1
+			if checkOption and tonumber(checkOption.position) then
+				basePosition = tonumber(checkOption.position) + 2
+			end
 			devToggle.position = basePosition
 			devLabel.position = basePosition + 1
 		end
@@ -167,7 +173,7 @@ return function(ctx)
 		if dev and dev.shared and library.base then
 			pcall(dev.shared.ensureOverlayGui)
 		end
-		local enabled = library.flags["Universal Dev Tools"] == true
+		local enabled = library.flags[devToolsFlag] == true
 		setEnabled(enabled)
 	end
 
