@@ -636,34 +636,47 @@ return function(ctx)
 		return offset
 	end
 
+	-- Holds ALWAYS release after chart hold end. Early release = broken holds.
 	local function holdReleaseOffsetSec(grade)
 		if not flag("Gakuran Rhythm Human Hold Releases", true) then
-			return 0.008 -- tiny past end so engine always counts hold complete
+			return 0.02
 		end
 		local lateBias = math.clamp(numFlag("Gakuran Rhythm Hold Release Bias", 62), 0, 100) / 100
+		-- Force mostly-late: floor lateBias at 0.85 for reliability
+		lateBias = math.max(0.85, lateBias)
 		local spreadMs = math.clamp(numFlag("Gakuran Rhythm Hold Release Spread", 28), 0, 80)
-		local spread = (spreadMs / 1000) * (0.4 + 0.6 * math.random())
-		local sign
+		local spread = (spreadMs / 1000) * (0.35 + 0.65 * math.random())
+		local off
 		if math.random() < lateBias then
-			sign = 1 -- after end
+			off = math.min(0.06, 0.012 + spread) -- 12–60ms after end
 		else
-			sign = -1 -- slight early
-		end
-		local off = sign * spread
-		-- Cap early release tightly — early drops break holds
-		if off < 0 then
-			off = math.max(off, -0.018)
-		else
-			off = math.min(off, 0.07)
+			off = math.max(-0.006, -spread * 0.25) -- at most 6ms early
 		end
 		if flag("Gakuran Rhythm Hold Grade Link", true) then
 			if grade == "OKAY" or grade == "BAD" then
-				off = off + randRange(0.005, 0.025)
+				off = math.max(off, 0.015) + randRange(0.005, 0.02)
 			elseif grade == "PERFECT" then
-				off = off * 0.7
+				off = math.max(0.01, off * 0.55) -- still after end
 			end
 		end
 		return off
+	end
+
+	local function noteLength(note)
+		local len = tonumber(note.len) or tonumber(note.length) or tonumber(note.holdLen) or 0
+		if len <= 0 and type(note.endT) == "number" and type(note.t) == "number" then
+			len = note.endT - note.t
+		end
+		if len <= 0 and type(note.duration) == "number" then
+			len = note.duration
+		end
+		if len <= 0 and type(note.hold) == "number" then
+			len = note.hold
+		end
+		if len <= 0 and note.isHold == true then
+			len = 0.2 -- fallback so we never treat unknown holds as taps
+		end
+		return len
 	end
 
 	local function planNote(note, now, windows, lookaheadSec)
@@ -678,21 +691,19 @@ return function(ctx)
 		end
 
 		local eta = note.t - now
-		if eta > lookaheadSec or eta < -0.12 then
+		-- Holds: plan earlier and allow slightly later catch-up
+		local len = noteLength(note)
+		local isHold = len > 0.05
+		local earlyWindow = isHold and -0.05 or -0.12
+		if eta > lookaheadSec or eta < earlyWindow then
 			return
 		end
 
-		local len = tonumber(note.len) or tonumber(note.length) or tonumber(note.holdLen) or 0
-		-- Some charts use endT / duration
-		if len <= 0 and type(note.endT) == "number" then
-			len = note.endT - note.t
-		end
-		if len <= 0 and type(note.duration) == "number" then
-			len = note.duration
-		end
-		local isHold = len > 0.05
-
 		local grade = pickGrade(isHold, now)
+		-- Perfect-weight overload: still never miss holds
+		if isHold and grade == "MISS" and flag("Gakuran Rhythm Hold No Miss", true) then
+			grade = "PERFECT"
+		end
 		st.gradeRolls[grade] = (st.gradeRolls[grade] or 0) + 1
 
 		if grade == "MISS" then
@@ -709,40 +720,46 @@ return function(ctx)
 		end
 
 		local offsetMs = gradeToOffsetMs(grade, windows)
+		-- Holds: keep head timing tight so we don't start late and clip the tail
+		if isHold then
+			local maxHoldOffset = math.min(windows.PERFECT * 0.85, 28)
+			offsetMs = math.clamp(offsetMs, -maxHoldOffset, maxHoldOffset)
+		end
 		local hitAt = note.t + (offsetMs / 1000)
 		local badSec = (windows.BAD / 1000) - 0.004
 		hitAt = math.clamp(hitAt, note.t - badSec, note.t + badSec)
 
 		local releaseAt
+		local holdEnd = nil
 		if isHold then
-			-- CRITICAL: hold until chart hold end (note.t + len), then humanize.
-			-- Releasing based only on hitAt + short tap was breaking holds.
-			local holdEnd = note.t + len
-			local releaseOff = holdReleaseOffsetSec(grade)
-			releaseAt = holdEnd + releaseOff
-			-- Never release more than 18ms before hold end
-			if releaseAt < holdEnd - 0.018 then
-				releaseAt = holdEnd - 0.012
+			holdEnd = note.t + len
+			-- ALWAYS release at/after hold end — never mid-tail
+			releaseAt = holdEnd + holdReleaseOffsetSec(grade)
+			if releaseAt < holdEnd + 0.008 then
+				releaseAt = holdEnd + 0.012
 			end
 			local minHold = math.clamp(numFlag("Gakuran Rhythm Min Hold Ms", 70), 40, 200) / 1000
 			if releaseAt < hitAt + minHold then
 				releaseAt = hitAt + minHold
+				-- still must cover hold end
+				if releaseAt < holdEnd + 0.008 then
+					releaseAt = holdEnd + 0.015
+				end
 			end
 			st.holdCount = (tonumber(st.holdCount) or 0) + 1
 		else
 			local tapMs = math.clamp(numFlag("Gakuran Rhythm Tap Length", 48), 25, 140)
-			releaseAt = hitAt + (tapMs / 1000) + randRange(-0.008, 0.018)
+			-- Short taps so the next note/hold on the same lane can press ASAP
+			releaseAt = hitAt + (tapMs / 1000) + randRange(-0.004, 0.01)
 		end
 
-		-- Chord stagger: slight lane-based offset so multi-lane hits aren't frame-perfect
-		local staggerMs = math.clamp(numFlag("Gakuran Rhythm Chord Stagger", 12), 0, 40)
-		if staggerMs > 0 then
-			local laneJitter = ((note.lane * 17) % 7 - 3) / 3 * (staggerMs / 1000)
-			hitAt = hitAt + laneJitter * randRange(0.4, 1)
-			if isHold then
-				-- keep hold end absolute; only press is staggered
-			else
-				releaseAt = releaseAt + laneJitter * 0.3
+		-- Chord stagger ONLY for taps — never desync simultaneous holds / hold+tap chords
+		if not isHold then
+			local staggerMs = math.clamp(numFlag("Gakuran Rhythm Chord Stagger", 12), 0, 40)
+			if staggerMs > 0 then
+				local laneJitter = ((note.lane * 17) % 7 - 3) / 3 * (staggerMs / 1000)
+				hitAt = hitAt + laneJitter * randRange(0.35, 1)
+				releaseAt = releaseAt + laneJitter * 0.25
 			end
 		end
 
@@ -753,45 +770,179 @@ return function(ctx)
 			noteT = note.t,
 			hitAt = hitAt,
 			releaseAt = releaseAt,
-			holdEnd = isHold and (note.t + len) or nil,
+			holdEnd = holdEnd,
 			offsetMs = offsetMs,
 			len = len,
 			isHold = isHold,
 			pressed = false,
 			released = false,
 			pressAttempts = 0,
+			deferred = 0,
 		}
 	end
 
-	local function laneBusy(lane, now, exceptPlan)
-		if not flag("Gakuran Rhythm Lane Mutex", true) then
-			return false
+	local function nowSafe()
+		return st.lastNow or 0
+	end
+
+	-- Same-lane scheduling: shrink taps before holds, serialize consecutive holds.
+	local function resolveLaneConflicts(windows)
+		local byLane = {}
+		for _, plan in pairs(st.planned) do
+			if plan and not plan.skip and not plan.released then
+				local lane = plan.lane
+				byLane[lane] = byLane[lane] or {}
+				table.insert(byLane[lane], plan)
+			end
 		end
+
+		local gap = 0.012
+		for _, list in pairs(byLane) do
+			table.sort(list, function(a, b)
+				local ta = a.hitAt or 0
+				local tb = b.hitAt or 0
+				if math.abs(ta - tb) < 1e-4 then
+					-- Simultaneous: holds take the press (shared head)
+					if a.isHold ~= b.isHold then
+						return a.isHold == true
+					end
+				end
+				return ta < tb
+			end)
+
+			for i = 1, #list - 1 do
+				local cur = list[i]
+				local nxt = list[i + 1]
+				if cur.released or nxt.released then
+					-- skip
+				elseif cur.isHold then
+					-- Hold then anything: next waits until hold fully released
+					local freeAt = (cur.releaseAt or cur.holdEnd or cur.hitAt or 0) + gap
+					if (nxt.hitAt or 0) < freeAt then
+						nxt.hitAt = freeAt
+						if not nxt.isHold then
+							local tapMs = math.clamp(numFlag("Gakuran Rhythm Tap Length", 48), 25, 140) / 1000
+							nxt.releaseAt = nxt.hitAt + tapMs
+						elseif nxt.holdEnd then
+							nxt.releaseAt = math.max(nxt.releaseAt or 0, nxt.holdEnd + 0.012)
+						end
+					end
+				else
+					-- Tap then next: force early tap release so hold/note can press on time
+					local needFree = (nxt.hitAt or 0) - gap
+					local minTap = (cur.hitAt or 0) + 0.022
+					if cur.pressed then
+						cur.releaseAt = math.min(cur.releaseAt or needFree, needFree)
+						if cur.releaseAt < minTap then
+							cur.releaseAt = minTap
+						end
+					else
+						cur.releaseAt = math.min(cur.releaseAt or (minTap + 0.03), needFree)
+						if cur.releaseAt < minTap then
+							cur.releaseAt = minTap
+						end
+					end
+					-- If tap still overlaps a hold head, nudge hold press within window
+					if cur.releaseAt + gap > (nxt.hitAt or 0) and nxt.isHold then
+						local maxLate = (windows.BAD / 1000) - 0.01
+						local push = cur.releaseAt + gap
+						nxt.hitAt = math.min(push, (nxt.noteT or push) + maxLate)
+						if nxt.holdEnd then
+							nxt.releaseAt = math.max(nxt.releaseAt or 0, nxt.holdEnd + 0.015)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local function tryReleasePlan(session, plan, reason)
+		if not plan or plan.released then
+			return
+		end
+		local lane = plan.lane
+		if st.laneOwner[lane] == plan or not plan.pressed then
+			if plan.pressed then
+				pcall(function()
+					session:_handleLaneRelease(lane)
+				end)
+			end
+			if st.laneOwner[lane] == plan then
+				st.laneOwner[lane] = nil
+			end
+		end
+		plan.released = true
+		debugLog("release", "L" .. tostring(lane), plan.isHold and "HOLD" or "TAP", reason or "")
+	end
+
+	local function tryPressPlan(session, note, plan, now)
+		local lane = plan.lane
+		if type(note) == "table" and (note.hit or note.attempted) then
+			plan.pressed = true
+			plan.released = true
+			return true
+		end
+
 		local owner = st.laneOwner[lane]
-		if not owner or owner == exceptPlan then
-			return false
+		if owner and owner ~= plan and not owner.released then
+			-- Preempt short taps so holds/chords can land
+			if owner.pressed and not owner.isHold then
+				tryReleasePlan(session, owner, "preempt-tap")
+			elseif owner.pressed and owner.isHold then
+				-- Cannot cut a hold early — reschedule this press after hold end
+				local freeAt = (owner.releaseAt or owner.holdEnd or now) + 0.012
+				plan.hitAt = math.max(plan.hitAt or now, freeAt)
+				plan.deferred = (plan.deferred or 0) + 1
+				return false
+			elseif not owner.pressed then
+				-- Owner queued but not pressed — if we are sooner/hold, take priority
+				if plan.isHold and not owner.isHold then
+					-- let us press; drop owner later
+				elseif (plan.hitAt or 0) + 0.001 < (owner.hitAt or 0) then
+					-- we are earlier
+				else
+					plan.hitAt = now + 0.008
+					return false
+				end
+			end
 		end
-		if owner.released or owner.skip then
-			st.laneOwner[lane] = nil
-			return false
-		end
-		-- Still holding
-		if owner.pressed and not owner.released then
+
+		local ok, err = pcall(function()
+			session:_handleLanePress(lane)
+		end)
+		if ok then
+			plan.pressed = true
+			plan.pressAttempts = 0
+			st.laneOwner[lane] = plan
+			st.hits = (tonumber(st.hits) or 0) + 1
+			debugLog(
+				"press",
+				plan.grade,
+				"L" .. tostring(lane),
+				plan.isHold and "HOLD" or "TAP",
+				string.format("%+.0fms", plan.offsetMs or 0),
+				plan.isHold and string.format("until %.2f", plan.releaseAt or 0) or ""
+			)
 			return true
 		end
-		-- Queued press very soon on same lane
-		if not owner.pressed and type(owner.hitAt) == "number" and owner.hitAt <= now + 0.02 then
-			return true
+
+		debugLog("press fail", err)
+		plan.pressAttempts = (plan.pressAttempts or 0) + 1
+		if plan.pressAttempts >= 10 then
+			plan.pressed = true
+			plan.released = true
+			return false
 		end
+		plan.hitAt = now + 0.012
 		return false
 	end
 
 	local function cleanupPlanned(now)
 		for note, plan in pairs(st.planned) do
 			local noteT = tonumber(plan.noteT) or 0
-			local aged = now - noteT
 			local holdEnd = tonumber(plan.holdEnd) or noteT
-			local maxAge = plan.isHold and (holdEnd - noteT + 2.5) or 2.2
+			local maxAge = plan.isHold and (holdEnd - noteT + 3) or 2.2
+			local aged = now - noteT
 
 			if aged > maxAge then
 				if st.laneOwner[plan.lane] == plan then
@@ -800,7 +951,7 @@ return function(ctx)
 				st.planned[note] = nil
 			elseif plan.skip and aged > 0.9 then
 				st.planned[note] = nil
-			elseif plan.pressed and plan.released and now > (plan.releaseAt or noteT) + 0.45 then
+			elseif plan.pressed and plan.released and now > (plan.releaseAt or noteT) + 0.4 then
 				if st.laneOwner[plan.lane] == plan then
 					st.laneOwner[plan.lane] = nil
 				end
@@ -857,6 +1008,21 @@ return function(ctx)
 			end
 		end
 
+		-- Fix same-lane tap→hold / hold→hold collisions every frame
+		resolveLaneConflicts(windows)
+
+		-- Preempt: if a hold/tap is due soon and a short tap owns the lane, release tap now
+		for _, plan in pairs(st.planned) do
+			if plan and not plan.skip and not plan.pressed and type(plan.hitAt) == "number" then
+				if plan.hitAt <= now + 0.04 then
+					local owner = st.laneOwner[plan.lane]
+					if owner and owner ~= plan and owner.pressed and not owner.released and not owner.isHold then
+						owner.releaseAt = now -- release this frame
+					end
+				end
+			end
+		end
+
 		local duePress = {}
 		local dueRelease = {}
 
@@ -864,15 +1030,7 @@ return function(ctx)
 			if plan.skip then
 				-- miss
 			elseif not plan.pressed and type(plan.hitAt) == "number" and now >= plan.hitAt then
-				if type(note) == "table" and (note.hit or note.attempted) then
-					plan.pressed = true
-					plan.released = true
-				elseif laneBusy(plan.lane, now, plan) then
-					-- Defer press until lane free (active hold on this lane)
-					plan.hitAt = now + 0.01
-				else
-					table.insert(duePress, { note = note, plan = plan })
-				end
+				table.insert(duePress, { note = note, plan = plan })
 			end
 
 			if plan.pressed and not plan.released and type(plan.releaseAt) == "number" and now >= plan.releaseAt then
@@ -880,76 +1038,39 @@ return function(ctx)
 			end
 		end
 
-		-- Sort presses by hitAt for stable chord order
+		-- Releases first so same-frame tap→hold chains work
+		table.sort(dueRelease, function(a, b)
+			return (a.plan.releaseAt or 0) < (b.plan.releaseAt or 0)
+		end)
+		for _, item in ipairs(dueRelease) do
+			tryReleasePlan(session, item.plan, "scheduled")
+		end
+
+		-- Presses: same-time chords press together (all free lanes)
 		table.sort(duePress, function(a, b)
-			return (a.plan.hitAt or 0) < (b.plan.hitAt or 0)
+			-- Holds slightly first when equal time
+			local da, db = a.plan.hitAt or 0, b.plan.hitAt or 0
+			if math.abs(da - db) < 0.001 then
+				if a.plan.isHold ~= b.plan.isHold then
+					return a.plan.isHold
+				end
+			end
+			return da < db
 		end)
 
 		for _, item in ipairs(duePress) do
-			local plan = item.plan
-			local note = item.note
-			local lane = plan.lane
-			if type(note) == "table" and (note.hit or note.attempted) then
-				plan.pressed = true
-				plan.released = true
-			elseif laneBusy(lane, now, plan) then
-				plan.hitAt = now + 0.012
-			else
-				local ok, err = pcall(function()
-					session:_handleLanePress(lane)
-				end)
-				if ok then
-					plan.pressed = true
-					plan.pressAttempts = 0
-					st.laneOwner[lane] = plan
-					st.hits = (tonumber(st.hits) or 0) + 1
-					debugLog(
-						"press",
-						plan.grade,
-						"L" .. tostring(lane),
-						plan.isHold and "HOLD" or "TAP",
-						string.format("%+.0fms", plan.offsetMs or 0),
-						plan.isHold and string.format("rel@%.2f", plan.releaseAt or 0) or ""
-					)
-				else
-					debugLog("press fail", err)
-					plan.pressAttempts = (plan.pressAttempts or 0) + 1
-					if plan.pressAttempts >= 8 then
-						plan.pressed = true
-						plan.released = true
-					else
-						plan.hitAt = now + 0.016
-					end
-				end
-			end
-		end
-
-		for _, item in ipairs(dueRelease) do
-			local plan = item.plan
-			local lane = plan.lane
-			-- Only release if we still own the lane
-			if st.laneOwner[lane] == plan or not flag("Gakuran Rhythm Lane Mutex", true) then
-				pcall(function()
-					session:_handleLaneRelease(lane)
-				end)
-				if st.laneOwner[lane] == plan then
-					st.laneOwner[lane] = nil
-				end
-			end
-			plan.released = true
-			debugLog("release", "L" .. tostring(lane), plan.isHold and "HOLD" or "TAP")
+			tryPressPlan(session, item.note, item.plan, now)
 		end
 
 		cleanupPlanned(now)
 
-		-- Live hold ownership count
 		local held = 0
 		for _, plan in pairs(st.laneOwner) do
 			if plan and plan.pressed and not plan.released then
 				held = held + 1
 			end
 		end
-		setHoldsLabel(string.format("%d active · %d planned holds", held, tonumber(st.holdCount) or 0))
+		setHoldsLabel(string.format("%d held · %d holds planned", held, tonumber(st.holdCount) or 0))
 	end
 
 	-- Setup --------------------------------------------------------------
