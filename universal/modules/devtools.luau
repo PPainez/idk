@@ -102,17 +102,7 @@ return function(ctx)
 				ctx.notify("Instances: " .. tostring(count), 3)
 			end,
 		})
-		section:AddButton({
-			text = "Count GC Objects",
-			callback = function()
-				if not caps.getgc then
-					ctx.notify("getgc unavailable", 3)
-					return
-				end
-				local ok, list = pcall(getgc)
-				ctx.notify(ok and type(list) == "table" and ("GC objects: " .. tostring(#list)) or "getgc failed", 3)
-			end,
-		})
+		section:AddLabel("getgc disabled (crashes many executors)")
 		section:AddLabel("Use Remote Spy wrapper API for logged outbound calls")
 	end
 

@@ -244,7 +244,7 @@ return function(ctx)
             filesystem = type(isfolder) == "function" and type(writefile) == "function",
             gethui = type(gethui) == "function",
             hookmetamethod = type(hookmetamethod) == "function",
-            getgc = type(getgc) == "function",
+            -- getgc intentionally not probed/used — crashes many executors
             getinstances = type(getinstances) == "function",
             gethiddenproperty = type(gethiddenproperty) == "function",
             debug = type(debug) == "table",

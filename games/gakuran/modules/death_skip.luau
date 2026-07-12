@@ -199,7 +199,7 @@ return function(ctx)
 			return st.controller
 		end
 
-		-- Primary: HeartButton connection upvalue (live-verified path)
+		-- HeartButton connection upvalue only — NEVER getgc (crashes many executors).
 		local ui = getDeathUi()
 		local btn = ui and ui:FindFirstChild("Frame") and ui.Frame:FindFirstChild("HeartButton")
 		if btn and type(getconnections) == "function" then
@@ -213,26 +213,6 @@ return function(ctx)
 						if ctrl then
 							st.controller = ctrl
 							return ctrl
-						end
-					end
-				end
-			end
-		end
-
-		-- Fallback: scan getgc for the controller table
-		if type(getgc) == "function" then
-			local ok, objects = pcall(getgc, true)
-			if ok and type(objects) == "table" then
-				for _, obj in ipairs(objects) do
-					if looksLikeDeathController(obj) then
-						-- Prefer the one bound to local player / current DeathUI
-						local guiOk = true
-						if obj._gui and obj._gui.Parent == nil then
-							guiOk = false
-						end
-						if guiOk then
-							st.controller = obj
-							return obj
 						end
 					end
 				end
