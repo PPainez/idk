@@ -996,6 +996,62 @@ return function(ctx)
 		end
 	end
 
+	local function styleHitDelay(attacker, dbEntry)
+		local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
+		local character = getCharacter(attacker)
+		local style = nil
+		if character then
+			local pd = character:FindFirstChild("PlayerData")
+			if pd then
+				style = pd:GetAttribute("Style") or pd:GetAttribute("CombatStyle")
+			end
+		end
+		if type(style) ~= "string" or style == "" then
+			return delay
+		end
+		local key = string.lower(style)
+		-- CombatConfig style base hitbox delays (live scrape).
+		local styleM1 = {
+			basic = 0.32,
+			boxing = 0.32,
+			capoeira = 0.33,
+			hakari = 0.28,
+			karate = 0.24,
+			kure = 0.32,
+			muaythai = 0.30,
+			slugger = 0.20,
+			striker = 0.32,
+			wrestling = 0.32,
+			default = 0.32,
+		}
+		local styleM2 = {
+			basic = 0.525,
+			boxing = 0.43,
+			capoeira = 0.45,
+			hakari = 0.59,
+			karate = 0.4875,
+			kure = 0.30,
+			muaythai = 0.60,
+			slugger = 0.82,
+			striker = 0.30,
+			wrestling = 0.525,
+			default = 0.30,
+		}
+		local kind = dbEntry and dbEntry.kind
+		local name = tostring(dbEntry and dbEntry.name or "")
+		if kind == "M2" or name:find("M2", 1, true) or name:find("Crit", 1, true) then
+			return styleM2[key] or delay
+		end
+		if kind == "EHit" or name:find("EHit", 1, true) then
+			return delay
+		end
+		local base = styleM1[key] or delay
+		if name:find("4th", 1, true) then
+			return base + 0.03
+		end
+		return base
+	end
+
 	local function scheduleResponse(attacker, track, dbEntry)
 		local animId = dbEntry.id
 		-- One pending response per attacker+anim (prevents double-fire spam).
@@ -1241,72 +1297,6 @@ return function(ctx)
 			return "M1", 0.28
 		end
 		return "M1", 0.32
-	end
-
-	local function styleHitDelay(attacker, dbEntry)
-		local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
-		local character = getCharacter(attacker)
-		local style = nil
-		if character then
-			local pd = character:FindFirstChild("PlayerData")
-			if pd then
-				style = pd:GetAttribute("Style") or pd:GetAttribute("CombatStyle")
-			end
-		end
-		if type(style) ~= "string" or style == "" then
-			return delay
-		end
-		local key = string.lower(style)
-		-- CombatConfig style base hitbox delays (live scrape).
-		local styleM1 = {
-			basic = 0.32,
-			boxing = 0.32,
-			capoeira = 0.33,
-			hakari = 0.28,
-			karate = 0.24,
-			kure = 0.32,
-			muaythai = 0.30,
-			slugger = 0.20,
-			striker = 0.32,
-			wrestling = 0.32,
-			default = 0.32,
-		}
-		local styleM2 = {
-			basic = 0.525,
-			boxing = 0.43,
-			capoeira = 0.45,
-			hakari = 0.59,
-			karate = 0.4875,
-			kure = 0.30,
-			muaythai = 0.60,
-			slugger = 0.82,
-			striker = 0.30,
-			wrestling = 0.525,
-			default = 0.30,
-		}
-		local kind = dbEntry and dbEntry.kind
-		local name = tostring(dbEntry and dbEntry.name or "")
-		if kind == "M2" or name:find("M2", 1, true) or name:find("Crit", 1, true) then
-			return styleM2[key] or delay
-		end
-		if kind == "EHit" or name:find("EHit", 1, true) then
-			return delay
-		end
-		-- M1 index offsets when name encodes 1st/2nd/3rd/4th
-		local base = styleM1[key] or delay
-		if name:find("1st", 1, true) then
-			return base
-		end
-		if name:find("2nd", 1, true) then
-			return base
-		end
-		if name:find("3rd", 1, true) then
-			return base
-		end
-		if name:find("4th", 1, true) then
-			return base + 0.03
-		end
-		return base
 	end
 
 	local function onAttackTrack(attacker, track)
