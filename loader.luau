@@ -12,10 +12,10 @@
     read it from getgenv().XANHUB_RUNTIME.
 ]]
 
-local REPOSITORY_ROOT = "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main"
+local REPOSITORY_ROOT = "https://raw.githubusercontent.com/PPainez/idk/main"
 local UI_URL = REPOSITORY_ROOT .. "/ui.luau"
 local MAIN_ROOT = REPOSITORY_ROOT
-local UNIVERSAL_URL = MAIN_ROOT .. "/universal.luau"
+local UNIVERSAL_URL = REPOSITORY_ROOT .. "/universal.luau"
 
 -- Place-specific scripts. This is the usual table to edit.
 local FEATURED_PLACES = {
@@ -370,22 +370,45 @@ local function createLoaderGui()
     }
 end
 
-local function fetchSource(url, attempts)
-    attempts = attempts or 3
-    local lastError
+local function withCacheBuster(url, attempt)
+    local separator = string.find(url, "?", 1, true) and "&" or "?"
+    return string.format(
+        "%s%sxanhub_cache=%s_%s",
+        url,
+        separator,
+        tostring(os.time()),
+        tostring(attempt or 1)
+    )
+end
 
-    for attempt = 1, attempts do
-        local ok, result = pcall(function()
-            return game:HttpGet(url, true)
-        end)
-        if ok and type(result) == "string" and #result > 20 then
-            return result
+local function fetchSource(urlOrUrls, attempts)
+    attempts = attempts or 3
+
+    local urls = type(urlOrUrls) == "table" and urlOrUrls or {urlOrUrls}
+    local errors = {}
+
+    for _, url in ipairs(urls) do
+        for attempt = 1, attempts do
+            local requestUrl = withCacheBuster(url, attempt)
+            local ok, result = pcall(function()
+                return game:HttpGet(requestUrl, true)
+            end)
+
+            if ok and type(result) == "string" and #result > 20 then
+                return result, nil, url
+            end
+
+            table.insert(errors, string.format(
+                "%s -> %s",
+                tostring(url),
+                tostring(result or "request failed")
+            ))
+
+            task.wait(0.35 * attempt)
         end
-        lastError = result
-        task.wait(0.35 * attempt)
     end
 
-    return nil, tostring(lastError or "request failed")
+    return nil, table.concat(errors, " | ")
 end
 
 local function compileSource(source, name)
@@ -428,7 +451,10 @@ local ok, fatalError = xpcall(function()
     end
 
     loader.setProgress(0.30, "Loading xanhub UI...")
-    local uiSource, uiError = fetchSource(UI_URL)
+    local uiSource, uiError = fetchSource({
+        UI_URL,
+        "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/ui.luau",
+    })
     assert(uiSource, "UI request failed: " .. tostring(uiError))
 
     loader.setProgress(0.43, "Compiling interface...")
@@ -460,14 +486,22 @@ local ok, fatalError = xpcall(function()
 
     if featured then
         targetName = tostring(featured.name or featured.file or "Featured Game")
-        targetUrl = MAIN_ROOT .. "/games/" .. tostring(featured.file)
+        targetUrl = {
+            REPOSITORY_ROOT .. "/games/" .. tostring(featured.file),
+            "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/games/" .. tostring(featured.file),
+            REPOSITORY_ROOT .. "/main/games/" .. tostring(featured.file),
+        }
         runtime.featured = true
         runtime.gameName = targetName
         runtime.gameFile = featured.file
         loader.setProgress(0.67, "Featured game found: " .. targetName)
     else
         targetName = "Universal"
-        targetUrl = UNIVERSAL_URL
+        targetUrl = {
+            REPOSITORY_ROOT .. "/universal.luau",
+            "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/universal.luau",
+            REPOSITORY_ROOT .. "/main/universal.luau",
+        }
         runtime.featured = false
         runtime.gameName = "Universal"
         loader.setProgress(0.67, "No featured script; using Universal")
@@ -481,7 +515,11 @@ local ok, fatalError = xpcall(function()
         runtime.featured = false
         runtime.gameName = "Universal"
         targetName = "Universal"
-        targetUrl = UNIVERSAL_URL
+        targetUrl = {
+            REPOSITORY_ROOT .. "/universal.luau",
+            "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/universal.luau",
+            REPOSITORY_ROOT .. "/main/universal.luau",
+        }
         loader.setProgress(0.80, "Featured script unavailable; loading Universal")
         targetSource, targetError = fetchSource(targetUrl)
     end
