@@ -6,7 +6,7 @@
       - M2 (optional) → force back MoveDirection + Evasive.Evasive()
       - behind attacker → Evasive.Evasive()
       - otherwise → Block.Block() timed to PerfectBlockWindow (~0.125s)
-    Visualizers: semi-transparent screen box + charge fill synced to anim progress.
+    Visualizers: 3D world boxes on attacker (M1/M2/EHit) with charge fill synced to anim.
 
     Attack DB: games/gakuran/modules/attack_db.luau (+ live rebuild from style folders)
 ]]
@@ -166,22 +166,25 @@ return function(ctx)
 		text = "Attack Visualizer",
 		flag = "Gakuran Combat Visualizer",
 		state = false,
-		tip = "Semi-transparent box on attackers that fills as the hit charges",
+		tip = "3D world boxes attached to attackers (M1/M2/EHit) that charge with the hit",
 	})
 	viz:AddToggle({
 		text = "Show M1",
 		flag = "Gakuran Viz M1",
 		state = true,
+		tip = "Orange 3D box on light attacks",
 	})
 	viz:AddToggle({
 		text = "Show M2",
 		flag = "Gakuran Viz M2",
 		state = true,
+		tip = "Red 3D box on heavies",
 	})
 	viz:AddToggle({
 		text = "Show EHit",
 		flag = "Gakuran Viz EHit",
 		state = true,
+		tip = "Yellow 3D box on extended hits",
 	})
 	viz:AddSlider({
 		text = "Viz Range",
@@ -200,14 +203,15 @@ return function(ctx)
 		value = 45,
 		float = 5,
 		suffix = "%",
-		tip = "How solid the charge fill is at full charge",
+		tip = "How solid the 3D charge fill is at full charge",
 	})
 	viz:AddToggle({
 		text = "Highlight Character",
 		flag = "Gakuran Viz Highlight",
 		state = true,
-		tip = "Also tint attacker with game-style M2/M1 highlight colors",
+		tip = "Also tint attacker with game-style M1/M2 colors",
 	})
+	viz:AddLabel("3D shell + charge fill welded to torso")
 
 	local dbSec = columns.combatRight:AddSection("Attack Database")
 	ctx.refs.combatDbLabel = dbSec:AddLabel("DB: loading…")
@@ -677,27 +681,43 @@ return function(ctx)
 		return false
 	end
 
-	-- Visualizer ---------------------------------------------------------
+	-- 3D Visualizer (world-space boxes attached to attacker character) ----
 
-	local function getVizFolder()
+	local function getVizWorldFolder()
 		if st.vizFolder and st.vizFolder.Parent then
 			return st.vizFolder
 		end
-		local parent = nil
-		pcall(function()
-			if ctx.createOverlayRoot then
-				parent = ctx.createOverlayRoot()
+		local folder = Workspace:FindFirstChild("XanhubCombatViz3D")
+		if not folder then
+			folder = Instance.new("Folder")
+			folder.Name = "XanhubCombatViz3D"
+			local ok = pcall(function()
+				folder.Parent = Workspace
+			end)
+			if not ok then
+				return nil
 			end
-		end)
-		parent = parent or library.base
-		if not parent then
-			return nil
 		end
-		local folder = Instance.new("Folder")
-		folder.Name = "XanhubCombatViz"
-		folder.Parent = parent
 		st.vizFolder = folder
 		return folder
+	end
+
+	local function makeGhostPart(name, color)
+		local part = Instance.new("Part")
+		part.Name = name
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.CanTouch = false
+		part.CastShadow = false
+		part.Massless = true
+		part.Material = Enum.Material.ForceField
+		part.Color = color or KIND_COLORS.M1
+		part.Transparency = 1
+		part.Size = Vector3.new(1, 1, 1)
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		return part
 	end
 
 	local function destroyViz(userId)
@@ -706,8 +726,8 @@ return function(ctx)
 			return
 		end
 		pcall(function()
-			if entry.root then
-				entry.root:Destroy()
+			if entry.model then
+				entry.model:Destroy()
 			end
 		end)
 		pcall(function()
@@ -718,90 +738,99 @@ return function(ctx)
 		st.vizEntries[userId] = nil
 	end
 
+	local function characterBounds(character, root)
+		local cf, size
+		local ok = pcall(function()
+			cf, size = character:GetBoundingBox()
+		end)
+		if ok and typeof(cf) == "CFrame" and typeof(size) == "Vector3" then
+			-- Pad slightly so the shell sits outside the mesh.
+			local padded = Vector3.new(
+				math.clamp(size.X + 0.9, 3.2, 7.5),
+				math.clamp(size.Y + 0.6, 4.5, 8.5),
+				math.clamp(size.Z + 0.9, 2.2, 5.5)
+			)
+			return cf, padded
+		end
+		-- R6 fallback around Torso / HRP
+		local center = root.CFrame * CFrame.new(0, 0.35, 0)
+		return center, Vector3.new(4.2, 5.6, 2.8)
+	end
+
 	local function ensureViz(attacker)
 		local userId = attacker.UserId
 		local existing = st.vizEntries[userId]
-		if existing and existing.root and existing.root.Parent then
+		if existing and existing.model and existing.model.Parent then
 			return existing
 		end
 
-		local folder = getVizFolder()
+		local folder = getVizWorldFolder()
 		if not folder then
 			return nil
 		end
 
-		local root = Instance.new("Frame")
-		root.Name = "Viz_" .. attacker.Name
-		root.BackgroundTransparency = 1
-		root.BorderSizePixel = 0
-		root.Visible = false
-		root.ZIndex = 720
-		root.Parent = folder
+		local model = Instance.new("Model")
+		model.Name = "Viz3D_" .. attacker.Name
+		model.Parent = folder
 
-		local box = Instance.new("Frame")
-		box.Name = "Box"
-		box.BackgroundTransparency = 1
-		box.BorderSizePixel = 0
-		box.ZIndex = 721
-		box.Parent = root
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 2
-		stroke.Color = KIND_COLORS.M2
-		stroke.Transparency = 0.15
-		stroke.Parent = box
+		local shell = makeGhostPart("Shell", KIND_COLORS.M1)
+		shell.Transparency = 1
+		shell.Parent = model
 
-		local fill = Instance.new("Frame")
-		fill.Name = "ChargeFill"
-		fill.BackgroundColor3 = KIND_COLORS.M2
-		fill.BackgroundTransparency = 0.75
-		fill.BorderSizePixel = 0
-		fill.AnchorPoint = Vector2.new(0, 1)
-		fill.Position = UDim2.fromScale(0, 1)
-		fill.Size = UDim2.fromScale(1, 0)
-		fill.ZIndex = 720
-		fill.Parent = box
+		local selection = Instance.new("SelectionBox")
+		selection.Name = "Outline"
+		selection.Adornee = shell
+		selection.LineThickness = 0.04
+		selection.SurfaceTransparency = 1
+		selection.Color3 = KIND_COLORS.M1
+		selection.Transparency = 0.15
+		selection.Parent = shell
 
-		local barBg = Instance.new("Frame")
-		barBg.Name = "BarBg"
-		barBg.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
-		barBg.BackgroundTransparency = 0.25
-		barBg.BorderSizePixel = 0
-		barBg.ZIndex = 722
-		barBg.Parent = root
+		-- Outer shell glass (very faint volume so it reads in 3D, not just edges)
+		local shellVolume = makeGhostPart("ShellVolume", KIND_COLORS.M1)
+		shellVolume.Material = Enum.Material.ForceField
+		shellVolume.Transparency = 0.92
+		shellVolume.Parent = model
 
-		local barFill = Instance.new("Frame")
-		barFill.Name = "BarFill"
-		barFill.BackgroundColor3 = KIND_COLORS.M2
-		barFill.BorderSizePixel = 0
-		barFill.Size = UDim2.fromScale(0, 1)
-		barFill.ZIndex = 723
-		barFill.Parent = barBg
+		local fill = makeGhostPart("ChargeFill", KIND_COLORS.M1)
+		fill.Material = Enum.Material.ForceField
+		fill.Transparency = 0.75
+		fill.Parent = model
+
+		-- World billboard label above the 3D box
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "Label"
+		billboard.AlwaysOnTop = true
+		billboard.Size = UDim2.fromOffset(160, 28)
+		billboard.StudsOffset = Vector3.new(0, 3.6, 0)
+		billboard.MaxDistance = 90
+		billboard.Adornee = shell
+		billboard.Parent = shell
 
 		local label = Instance.new("TextLabel")
-		label.Name = "Label"
 		label.BackgroundTransparency = 1
-		label.BorderSizePixel = 0
+		label.Size = UDim2.fromScale(1, 1)
 		label.Font = Enum.Font.Code
-		label.TextSize = 12
+		label.TextSize = 14
 		label.TextColor3 = Color3.new(1, 1, 1)
-		label.TextStrokeTransparency = 0.4
-		label.TextXAlignment = Enum.TextXAlignment.Center
-		label.ZIndex = 724
-		label.Parent = root
+		label.TextStrokeTransparency = 0.35
+		label.Text = ""
+		label.Parent = billboard
 
 		local entry = {
-			root = root,
-			box = box,
-			stroke = stroke,
+			model = model,
+			shell = shell,
+			shellVolume = shellVolume,
+			selection = selection,
 			fill = fill,
-			barBg = barBg,
-			barFill = barFill,
 			label = label,
+			billboard = billboard,
 			highlight = nil,
 			track = nil,
 			entry = nil,
 			expires = 0,
 			attacker = attacker,
+			boxSize = Vector3.new(4.2, 5.6, 2.8),
 		}
 		st.vizEntries[userId] = entry
 		return entry
@@ -814,7 +843,18 @@ return function(ctx)
 		if kind == "EHit" or (type(name) == "string" and name:find("EHit", 1, true)) then
 			return flag("Gakuran Viz EHit", true)
 		end
+		-- Default all remaining combat hits to M1 (1st–4th M1, etc.)
 		return flag("Gakuran Viz M1", true)
+	end
+
+	local function applyVizColor(vizEntry, color)
+		vizEntry.selection.Color3 = color
+		vizEntry.shellVolume.Color = color
+		vizEntry.fill.Color = color
+		if vizEntry.highlight then
+			vizEntry.highlight.FillColor = color
+			vizEntry.highlight.OutlineColor = color
+		end
 	end
 
 	local function startVisualizer(attacker, track, dbEntry)
@@ -830,36 +870,32 @@ return function(ctx)
 		end
 		vizEntry.track = track
 		vizEntry.entry = dbEntry
-		vizEntry.expires = os.clock() + math.max(0.45, (tonumber(dbEntry.hitDelay) or 0.35) + 0.35)
+		vizEntry.expires = os.clock() + math.max(0.55, (tonumber(dbEntry.hitDelay) or 0.35) + 0.4)
 		vizEntry.attacker = attacker
 
 		local color = kindColor(dbEntry.kind, dbEntry.name)
-		vizEntry.stroke.Color = color
-		vizEntry.fill.BackgroundColor3 = color
-		vizEntry.barFill.BackgroundColor3 = color
+		applyVizColor(vizEntry, color)
 		vizEntry.label.Text = string.format(
 			"%s · %s",
 			tostring(dbEntry.name or "?"),
 			tostring(dbEntry.kind or "?")
 		)
 
-		if flag("Gakuran Viz Highlight", true) then
-			local character = getCharacter(attacker)
-			if character then
-				if not vizEntry.highlight or not vizEntry.highlight.Parent then
-					local hl = Instance.new("Highlight")
-					hl.Name = "XanhubCombatVizHL"
-					hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-					hl.FillTransparency = 0.75
-					hl.OutlineTransparency = 0.2
-					hl.Parent = character
-					vizEntry.highlight = hl
-				end
-				vizEntry.highlight.Adornee = character
-				vizEntry.highlight.FillColor = color
-				vizEntry.highlight.OutlineColor = color
-				vizEntry.highlight.Enabled = true
+		local character = getCharacter(attacker)
+		if flag("Gakuran Viz Highlight", true) and character then
+			if not vizEntry.highlight or not vizEntry.highlight.Parent then
+				local hl = Instance.new("Highlight")
+				hl.Name = "XanhubCombatVizHL"
+				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				hl.FillTransparency = 0.8
+				hl.OutlineTransparency = 0.25
+				hl.Parent = character
+				vizEntry.highlight = hl
 			end
+			vizEntry.highlight.Adornee = character
+			vizEntry.highlight.FillColor = color
+			vizEntry.highlight.OutlineColor = color
+			vizEntry.highlight.Enabled = true
 		elseif vizEntry.highlight then
 			vizEntry.highlight.Enabled = false
 		end
@@ -873,13 +909,11 @@ return function(ctx)
 			return
 		end
 
-		local cam = Workspace.CurrentCamera or Camera
-		if not cam then
-			return
-		end
 		local myRoot = getLocalRoot()
 		local vizRange = numFlag("Gakuran Viz Range", 28)
-		local maxFillAlpha = 1 - (numFlag("Gakuran Viz Opacity", 45) / 100)
+		-- Opacity slider: 10–90% → transparency at full charge
+		local solidAlpha = numFlag("Gakuran Viz Opacity", 45) / 100
+		local fullFillTransparency = math.clamp(1 - solidAlpha, 0.08, 0.9)
 		local now = os.clock()
 
 		for userId, vizEntry in pairs(st.vizEntries) do
@@ -894,25 +928,14 @@ return function(ctx)
 				and character
 				and root
 				and dbEntry
+				and vizEntry.model
+				and vizEntry.model.Parent
 				and now < (vizEntry.expires or 0)
 
 			if alive and myRoot then
 				local dist = (root.Position - myRoot.Position).Magnitude
 				if dist > vizRange + 4 then
 					alive = false
-				end
-			end
-
-			-- Track still playing?
-			if alive and track then
-				local playing = false
-				pcall(function()
-					playing = track.IsPlaying == true
-				end)
-				if not playing and now > (vizEntry.expires - 0.2) then
-					-- keep brief linger after track ends
-				elseif not playing then
-					-- allow short trail after hit
 				end
 			end
 
@@ -927,62 +950,46 @@ return function(ctx)
 					end)
 				end
 				local progress = math.clamp(elapsed / hitDelay, 0, 1)
-				-- If track already past hit, show full charge briefly.
 				if elapsed >= hitDelay then
 					progress = 1
 				end
 
-				local head = character:FindFirstChild("Head")
-					or character:FindFirstChild("Torso")
-					or root
-				local top = (head and head.Position or root.Position) + Vector3.new(0, 0.9, 0)
-				local bottom = root.Position - Vector3.new(0, 3, 0)
-				local mid = (top + bottom) * 0.5
+				local boxCf, boxSize = characterBounds(character, root)
+				vizEntry.boxSize = boxSize
 
-				local spMid, onScreen = cam:WorldToViewportPoint(mid)
-				local spTop = cam:WorldToViewportPoint(top)
-				local spBot = cam:WorldToViewportPoint(bottom)
-				if not onScreen or spMid.Z <= 0 then
-					vizEntry.root.Visible = false
-					if vizEntry.highlight then
-						vizEntry.highlight.Enabled = false
-					end
-				else
-					local height = math.abs(spTop.Y - spBot.Y)
-					height = math.clamp(height, 48, 280)
-					local width = height * 0.55
-					local x = spMid.X - width * 0.5
-					local y = math.min(spTop.Y, spBot.Y)
+				-- Shell outline follows character orientation / bounding box.
+				vizEntry.shell.Size = boxSize
+				vizEntry.shell.CFrame = boxCf
+				vizEntry.shell.Transparency = 1
 
-					vizEntry.root.Visible = true
-					vizEntry.box.Position = UDim2.fromOffset(x, y)
-					vizEntry.box.Size = UDim2.fromOffset(width, height)
-					vizEntry.box.Visible = true
+				vizEntry.shellVolume.Size = boxSize
+				vizEntry.shellVolume.CFrame = boxCf
+				-- Faint volume ramps slightly with charge so M1/M2 both read in world.
+				vizEntry.shellVolume.Transparency = 0.94 - progress * 0.08
 
-					local fillAlpha = 0.92 - progress * (0.92 - maxFillAlpha)
-					vizEntry.fill.BackgroundTransparency = fillAlpha
-					vizEntry.fill.Size = UDim2.new(1, 0, progress, 0)
+				-- Charge fill grows from the feet upward inside the shell.
+				local fillH = math.max(0.08, boxSize.Y * progress)
+				local fillSize = Vector3.new(
+					math.max(0.2, boxSize.X - 0.35),
+					fillH,
+					math.max(0.2, boxSize.Z - 0.35)
+				)
+				vizEntry.fill.Size = fillSize
+				vizEntry.fill.CFrame = boxCf * CFrame.new(0, -boxSize.Y * 0.5 + fillH * 0.5, 0)
+				vizEntry.fill.Transparency = 0.9 - progress * (0.9 - fullFillTransparency)
 
-					vizEntry.barBg.Position = UDim2.fromOffset(x, y + height + 3)
-					vizEntry.barBg.Size = UDim2.fromOffset(width, 5)
-					vizEntry.barBg.Visible = true
-					vizEntry.barFill.Size = UDim2.new(progress, 0, 1, 0)
+				vizEntry.selection.Transparency = 0.35 - progress * 0.25
+				vizEntry.billboard.StudsOffset = Vector3.new(0, boxSize.Y * 0.55 + 0.35, 0)
+				vizEntry.label.Text = string.format(
+					"%s %d%%",
+					tostring(dbEntry.name or dbEntry.kind or "?"),
+					math.floor(progress * 100 + 0.5)
+				)
 
-					vizEntry.label.Position = UDim2.fromOffset(x - 20, y - 16)
-					vizEntry.label.Size = UDim2.fromOffset(width + 40, 14)
-					vizEntry.label.Text = string.format(
-						"%s %d%%",
-						tostring(dbEntry.name or dbEntry.kind or "?"),
-						math.floor(progress * 100 + 0.5)
-					)
-					vizEntry.label.Visible = true
-
-					if vizEntry.highlight and flag("Gakuran Viz Highlight", true) then
-						vizEntry.highlight.Enabled = true
-						-- Highlight intensifies with charge (more opaque fill).
-						vizEntry.highlight.FillTransparency = 0.88 - progress * 0.35
-						vizEntry.highlight.OutlineTransparency = 0.35 - progress * 0.25
-					end
+				if vizEntry.highlight and flag("Gakuran Viz Highlight", true) then
+					vizEntry.highlight.Enabled = true
+					vizEntry.highlight.FillTransparency = 0.88 - progress * 0.35
+					vizEntry.highlight.OutlineTransparency = 0.4 - progress * 0.25
 				end
 			end
 		end
