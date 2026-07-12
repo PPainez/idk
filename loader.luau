@@ -495,10 +495,33 @@ local ok, fatalError = xpcall(function()
     assert(targetChunk, targetName .. " compile failed: " .. tostring(targetCompileError))
 
     loader.setProgress(0.95, "Starting " .. targetName .. " menu...")
-    local executed, executionError = xpcall(function()
-        return targetChunk(runtime)
-    end, debug.traceback)
-    assert(executed, targetName .. " runtime failed: " .. tostring(executionError))
+    -- Featured scripts may wire features after showing UI. Cap wait so the loader
+    -- never sits forever if a game edition hangs on setup.
+    local finished = false
+    local executionError
+    task.spawn(function()
+        local executed, err = xpcall(function()
+            return targetChunk(runtime)
+        end, debug.traceback)
+        if not executed then
+            executionError = err
+        end
+        finished = true
+    end)
+
+    local startClock = os.clock()
+    while not finished and (os.clock() - startClock) < 25 do
+        task.wait(0.05)
+    end
+
+    if not finished then
+        warn("[xanhub loader] " .. targetName .. " is still starting; closing loader overlay")
+        loader.setProgress(1, targetName .. " menu open (background start)", Color3.fromRGB(255, 200, 90))
+        loader.close(true)
+        return
+    end
+
+    assert(not executionError, targetName .. " runtime failed: " .. tostring(executionError))
 
     loader.setProgress(1, targetName .. " loaded")
     loader.close(true)

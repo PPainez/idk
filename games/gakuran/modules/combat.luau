@@ -549,7 +549,7 @@ return function(ctx)
 	-- Setup --------------------------------------------------------------
 
 	local function setup()
-		-- Load attack DB module
+		-- Load attack DB (seed only — never block boot on live rebuild).
 		local AttackDBMod
 		if ctx.moduleLoader and type(ctx.moduleLoader.load) == "function" then
 			local ok, mod = pcall(function()
@@ -562,7 +562,6 @@ return function(ctx)
 		if type(AttackDBMod) == "table" and type(AttackDBMod.create) == "function" then
 			st.db = AttackDBMod.create()
 		else
-			-- minimal fallback
 			st.db = {
 				byId = {},
 				count = 0,
@@ -577,43 +576,61 @@ return function(ctx)
 		end
 
 		if ctx.refs.combatDbLabel then
-			ctx.refs.combatDbLabel.Text = "DB: " .. tostring(st.db.count or 0) .. " attack anims"
+			ctx.refs.combatDbLabel.Text = "DB: " .. tostring(st.db.count or 0) .. " seed · rebuilding…"
 		end
+		setStatus("idle · DB " .. tostring(st.db.count or 0) .. " (seed)")
 
-		-- Rebuild once combat modules exist
+		-- Heavy work after hub + loader are fully up.
 		task.defer(function()
-			if st.db and st.db.rebuild then
-				local n = st.db:rebuild()
-				if ctx.refs.combatDbLabel then
+			if ctx.state.unloading then
+				return
+			end
+
+			if st.db and type(st.db.rebuild) == "function" then
+				local ok, n = pcall(function()
+					return st.db:rebuild()
+				end)
+				if ok and ctx.refs.combatDbLabel then
 					ctx.refs.combatDbLabel.Text = "DB: " .. tostring(n) .. " attack anims"
 				end
-				setStatus("ready · " .. tostring(n) .. " attacks indexed")
-			end
-		end)
-
-		for _, player in ipairs(Players:GetPlayers()) do
-			if player ~= LocalPlayer then
-				if player.Character then
-					hookCharacter(player, player.Character)
+				if ok then
+					setStatus("ready · " .. tostring(n) .. " attacks indexed")
+				else
+					setStatus("DB rebuild failed · using seed")
+					debugLog("rebuild failed", n)
 				end
-				ctx.addConnection(player.CharacterAdded, function(character)
-					task.defer(hookCharacter, player, character)
-				end)
 			end
-		end
 
-		ctx.addConnection(Players.PlayerAdded, function(player)
-			ctx.addConnection(player.CharacterAdded, function(character)
-				task.defer(hookCharacter, player, character)
-			end)
-			if player.Character then
-				hookCharacter(player, player.Character)
+			for _, player in ipairs(Players:GetPlayers()) do
+				if player ~= LocalPlayer then
+					if player.Character then
+						pcall(hookCharacter, player, player.Character)
+					end
+					ctx.addConnection(player.CharacterAdded, function(character)
+						task.defer(function()
+							pcall(hookCharacter, player, character)
+						end)
+					end)
+				end
 			end
+
+			ctx.addConnection(Players.PlayerAdded, function(player)
+				ctx.addConnection(player.CharacterAdded, function(character)
+					task.defer(function()
+						pcall(hookCharacter, player, character)
+					end)
+				end)
+				if player.Character then
+					task.defer(function()
+						pcall(hookCharacter, player, player.Character)
+					end)
+				end
+			end)
+
+			ctx.addConnection(Players.PlayerRemoving, unhookPlayer)
 		end)
 
-		ctx.addConnection(Players.PlayerRemoving, unhookPlayer)
-
-		-- Stay equipped / cooldown clear (throttled — avoid per-frame attribute spam)
+		-- Stay equipped / cooldown clear (throttled)
 		local maintAccum = 0
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
@@ -635,8 +652,6 @@ return function(ctx)
 				stayEquipped(character)
 			end
 		end)
-
-		setStatus("idle · DB " .. tostring(st.db.count or 0))
 	end
 
 	library:AddCleanup(function()

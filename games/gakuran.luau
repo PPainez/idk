@@ -191,17 +191,26 @@ end
 local initialized, initError = library:Init()
 assert(initialized, "[xanhub gakuran] initialization failed: " .. tostring(initError))
 
-ctx.createOverlayRoot()
-
-for index, setup in ipairs(featureSetups) do
-	local ok, err = pcall(setup)
-	if not ok then
-		warn("[xanhub gakuran] feature setup failed (" .. tostring(featureNames[index]) .. "): " .. tostring(err))
-	end
+-- Show menu immediately so the multi-game loader can close without waiting on feature wiring.
+pcall(function()
+	ctx.createOverlayRoot()
+end)
+library:SetOpen(true)
+if ctx.tabs and ctx.tabs.home and library.selectTab then
+	pcall(function()
+		library:selectTab(ctx.tabs.home)
+	end)
 end
 
-safeSetup("devtools", devtoolsController)
-safeSetup("parry_builder", parryBuilder)
+local detected = game.PlaceId == GAKURAN_PLACE_ID
+if ctx.refs.runtimeStatus then
+	ctx.refs.runtimeStatus.Text = detected
+		and ("Status: ready · wiring " .. #featureNames .. " features…")
+		or "Status: wrong place — some features may misbehave"
+end
+if ctx.refs.featureStatus then
+	ctx.refs.featureStatus.Text = "Loaded: " .. table.concat(featureNames, ", ")
+end
 
 library:AddCleanup(function()
 	state.unloading = true
@@ -228,22 +237,42 @@ library:AddCleanup(function()
 	end
 end)
 
-library:SetOpen(true)
-library:selectTab(ctx.tabs.home)
+-- Wire features after return so loader.luau is not stuck on "Starting Gakuran…".
+task.defer(function()
+	if state.unloading then
+		return
+	end
 
-local detected = game.PlaceId == GAKURAN_PLACE_ID
-if ctx.refs.runtimeStatus then
-	ctx.refs.runtimeStatus.Text = detected
-		and ("Status: ready · " .. #featureNames .. " features loaded")
-		or "Status: wrong place — some features may misbehave"
-end
-if ctx.refs.featureStatus then
-	ctx.refs.featureStatus.Text = "Loaded: " .. table.concat(featureNames, ", ")
-end
+	for index, setup in ipairs(featureSetups) do
+		if state.unloading then
+			return
+		end
+		local ok, err = pcall(setup)
+		if not ok then
+			warn("[xanhub gakuran] feature setup failed (" .. tostring(featureNames[index]) .. "): " .. tostring(err))
+		end
+	end
 
-ctx.notify(detected and "xanhub Gakuran ready" or "xanhub Gakuran loaded (place mismatch)", 3)
-print("[xanhub] Gakuran loaded for place", game.PlaceId, "features", table.concat(featureNames, ", "))
+	safeSetup("devtools", devtoolsController)
+	safeSetup("parry_builder", parryBuilder)
 
+	if state.unloading then
+		return
+	end
+
+	if ctx.refs.runtimeStatus then
+		ctx.refs.runtimeStatus.Text = detected
+			and ("Status: ready · " .. #featureNames .. " features live")
+			or "Status: wrong place — some features may misbehave"
+	end
+
+	pcall(function()
+		ctx.notify(detected and "xanhub Gakuran ready" or "xanhub Gakuran loaded (place mismatch)", 3)
+	end)
+	print("[xanhub] Gakuran features live for place", game.PlaceId, table.concat(featureNames, ", "))
+end)
+
+print("[xanhub] Gakuran menu ready for place", game.PlaceId)
 return {
 	library = library,
 	runtime = runtime,

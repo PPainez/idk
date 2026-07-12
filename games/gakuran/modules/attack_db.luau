@@ -271,7 +271,14 @@ function AttackDB.create()
 		return list
 	end
 
-	db:rebuild()
+	-- Seed only at create-time. Live rebuild is expensive (style folders + getloadedmodules)
+	-- and must never block hub boot / the multi-game loader.
+	local n = 0
+	for _ in pairs(byId) do
+		n = n + 1
+	end
+	db.count = n
+	db.built = false
 	return db
 end
 
