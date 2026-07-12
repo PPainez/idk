@@ -50,6 +50,8 @@ local LOCOMOTION_IDS = {
 	["130267921858674"] = true, -- Karate Walk
 	["78370245490631"] = true, -- default Walk
 	["113331696487725"] = true, -- Basic Walk
+	["124220338099067"] = true, -- Basic Idle
+	["134623519349383"] = true, -- Basic Blocking
 	["73766443218740"] = true, -- Wrestling Idle
 	["101161965631044"] = true, -- Kure Idle
 	["102982320608759"] = true, -- MuayThai Idle
@@ -242,12 +244,13 @@ local SEED = {
 	["85931837451298"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["114511731321756"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["74690341409113"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
-	-- Basic
-	["83491849294956"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.125 },
-	["89420531853362"] = { name = "2ndM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
-	["83730275893449"] = { name = "3rdM1", kind = "M1", hitDelay = 0.28, window = 0.125 },
-	["106980660082799"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 },
-	["78888626472394"] = { name = "M2", kind = "M2", hitDelay = 0.38, window = 0.125 },
+	-- Basic (Combat.BasicAnims — style M1≈0.32, M2≈0.525; no Crit anim on Basic)
+	["83491849294956"] = { name = "1stM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Basic 1
+	["89420531853362"] = { name = "2ndM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Basic 2
+	["83730275893449"] = { name = "3rdM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Basic 3
+	["106980660082799"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 }, -- Basic 4
+	["78888626472394"] = { name = "M2", kind = "M2", hitDelay = 0.525, window = 0.125 }, -- Basic M2 (heavy, not Crit)
+
 	-- Boxing (Combat.BoxingAnims — style M1HitboxDelay≈0.32, M2≈0.43)
 	["137980914350618"] = { name = "1stM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 1
 	["100408082509740"] = { name = "2ndM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 2
