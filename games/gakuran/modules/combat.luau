@@ -1052,16 +1052,92 @@ return function(ctx)
 		return base
 	end
 
+	local function trackTime(track)
+		local t = 0
+		if track then
+			pcall(function()
+				t = tonumber(track.TimePosition) or 0
+			end)
+		end
+		return t
+	end
+
+	local function attackerCombo(attacker)
+		local character = getCharacter(attacker)
+		if not character then
+			return 0
+		end
+		return tonumber(character:GetAttribute("Combo")) or 0
+	end
+
+	local function attackerHoldingM1(attacker)
+		local character = getCharacter(attacker)
+		if not character then
+			return false
+		end
+		return character:GetAttribute("M1Hold") == true
+			or character:GetAttribute("CombatAttacking") == true
+	end
+
+	-- Hold-M1 reuses AnimationTrack instances / rewinds TimePosition.
+	-- Key swings by anim + swing index so each punch in a held string can parry.
+	local function swingKey(attacker, track, animId)
+		st.swingState = st.swingState or {}
+		local uid = attacker.UserId
+		local ps = st.swingState[uid]
+		if not ps then
+			ps = {
+				byTrack = setmetatable({}, { __mode = "k" }),
+				lastCombo = -1,
+			}
+			st.swingState[uid] = ps
+		end
+
+		local tpos = trackTime(track)
+		local combo = attackerCombo(attacker)
+		local ts = ps.byTrack[track]
+		if not ts then
+			ts = { swing = 0, lastTime = tpos, lastCombo = combo }
+			ps.byTrack[track] = ts
+		end
+
+		-- Track replayed (TimePosition went backwards) → new swing
+		if tpos + 0.1 < (ts.lastTime or 0) then
+			ts.swing = (ts.swing or 0) + 1
+		end
+		-- Combo attribute advanced (hold M1 1→2→3→4)
+		if combo > 0 and combo ~= ts.lastCombo then
+			if combo ~= ps.lastCombo then
+				ts.swing = (ts.swing or 0) + 1
+			end
+		end
+		ts.lastTime = tpos
+		ts.lastCombo = combo
+		ps.lastCombo = combo
+
+		return string.format("%s:%s:%d:%d", tostring(uid), tostring(animId), ts.swing or 0, combo)
+	end
+
 	local function scheduleResponse(attacker, track, dbEntry)
 		local animId = dbEntry.id
-		-- One pending response per attacker+anim (prevents double-fire spam).
-		local dedupe = tostring(attacker.UserId) .. ":" .. tostring(animId)
+		local dedupe = swingKey(attacker, track, animId)
 		if st.pending[dedupe] then
-			-- Still refresh visualizer for this attack.
+			startVisualizer(attacker, track, dbEntry)
+			return
+		end
+		-- Short TTL handled set (replaces permanent track lock that broke hold combos)
+		st.handledSwings = st.handledSwings or {}
+		if st.handledSwings[dedupe] then
 			startVisualizer(attacker, track, dbEntry)
 			return
 		end
 		st.pending[dedupe] = true
+		st.handledSwings[dedupe] = true
+		task.delay(1.6, function()
+			if st.handledSwings then
+				st.handledSwings[dedupe] = nil
+			end
+		end)
 
 		startVisualizer(attacker, track, dbEntry)
 
@@ -1086,12 +1162,7 @@ return function(ctx)
 		end
 
 		-- Prefer remaining time from the live track when available.
-		local elapsed = 0
-		if track then
-			pcall(function()
-				elapsed = tonumber(track.TimePosition) or 0
-			end)
-		end
+		local elapsed = trackTime(track)
 		local reaction = numFlag("Gakuran Reaction Offset", 40) / 1000
 		local pingComp, pingMs = pingCompensationSeconds()
 
@@ -1102,15 +1173,28 @@ return function(ctx)
 			waitTime = math.max(0, hitDelay - early - pingComp - elapsed)
 		else
 			local target = hitDelay - reaction - (window * 0.35) - pingComp
-			waitTime = math.max(0, target - elapsed)
+			waitTime = target - elapsed
+			-- Late detect during hold string: still try if inside hitbox duration.
+			if waitTime < 0 then
+				if elapsed <= hitDelay + 0.14 then
+					waitTime = 0
+				else
+					-- Too late for this swing — free the key so a replay can re-arm.
+					st.pending[dedupe] = nil
+					st.handledSwings[dedupe] = nil
+					return
+				end
+			end
 		end
 
 		if flag("Gakuran Combat Debug Logs", false) then
+			local hold = attackerHoldingM1(attacker)
 			combatToast("debug", "Attack Seen", string.format(
-				"%s · %s from %s\nbase %.0fms · wait %.0fms · ping %.0fms%s%s",
+				"%s · %s from %s%s\nbase %.0fms · wait %.0fms · ping %.0fms%s%s",
 				tostring(dbEntry.name or "?"),
 				tostring(dbEntry.kind or "?"),
 				tostring(attacker.Name),
+				hold and " · HOLD" or "",
 				hitDelay * 1000,
 				waitTime * 1000,
 				pingMs,
@@ -1132,9 +1216,10 @@ return function(ctx)
 				return
 			end
 
-			-- Soft cooldown — keep low so 2nd/3rd/4th M1 in a combo still parry.
+			-- Soft cooldown — very low so held M1 strings (1st→4th) all parry.
 			local now = os.clock()
-			if autoParry and (now - (st.lastParryAt or 0)) < 0.05 and not (dodgeM2 and m2Attack) then
+			local holdCd = attackerHoldingM1(attacker) and 0.03 or 0.045
+			if autoParry and (now - (st.lastParryAt or 0)) < holdCd and not (dodgeM2 and m2Attack) then
 				return
 			end
 
@@ -1320,11 +1405,12 @@ return function(ctx)
 			return
 		end
 
-		-- handled = fully processed (scheduled or discarded). NOT set when only out-of-range.
-		-- Previously marking tracks "seen" before range check made punches + viz miss forever
-		-- if the first sighting was outside range.
-		st.handledTracks = st.handledTracks or setmetatable({}, { __mode = "k" })
-		if st.handledTracks[track] then
+		-- Ignore non-playing tracks (hold strings leave spent tracks at end time).
+		local playing = true
+		pcall(function()
+			playing = track.IsPlaying == true
+		end)
+		if not playing then
 			return
 		end
 
@@ -1342,7 +1428,6 @@ return function(ctx)
 			isLoco = st.attackDbMod.isLocomotionId(pure)
 		end
 		if isLoco then
-			st.handledTracks[track] = true
 			return
 		end
 
@@ -1356,8 +1441,6 @@ return function(ctx)
 
 		if not entry then
 			local combatName = looksLikeCombatName(name)
-			-- Remotes strip names → Action priority can mean combat OR sit/emotes.
-			-- Sit/chill loops are often Length 0 or multi-second; M1/M2 hitboxes are short.
 			local actionPri = isActionPriority(track)
 			local trackLen = 0
 			pcall(function()
@@ -1395,18 +1478,14 @@ return function(ctx)
 						db.count = (tonumber(db.count) or 0) + 1
 					end
 				else
-					st.handledTracks[track] = true
 					return
 				end
 			else
-				-- Long Action tracks (sits/emotes) or Core/Idle junk: ignore forever.
 				if pure ~= "" and st.attackDbMod and type(st.attackDbMod.ignoreId) == "function" then
-					-- Learn sit/emote IDs so future scans skip them even if Action-priority.
 					if actionPri and not shortCombatLen then
 						pcall(st.attackDbMod.ignoreId, pure)
 					end
 				end
-				st.handledTracks[track] = true
 				return
 			end
 		end
@@ -1426,24 +1505,27 @@ return function(ctx)
 		local vizRange = flag("Gakuran Combat Visualizer", false) and numFlag("Gakuran Viz Range", 28) or 0
 		local maxAwareness = math.max(parryRange, vizRange)
 
-		-- Visualizer can show further out than parry range.
 		if flag("Gakuran Combat Visualizer", false) and dist <= vizRange + 4 then
 			startVisualizer(attacker, track, entry)
 		end
 
 		if dist > maxAwareness + 4 then
-			-- Still in windup somewhere far — do NOT mark handled so closer approach re-fires.
 			return
 		end
 
 		if dist > parryRange + 4 then
-			-- Only viz-range: keep polling until in parry range or track ends.
 			return
 		end
 
-		-- In parry/dodge range → schedule once.
-		st.handledTracks[track] = true
-		debugLog("attack seen", entry.name, entry.kind, attacker.Name, string.format("%.1fst", dist))
+		debugLog(
+			"attack seen",
+			entry.name,
+			entry.kind,
+			attacker.Name,
+			string.format("%.1fst", dist),
+			attackerHoldingM1(attacker) and "HOLD" or "",
+			"c" .. tostring(attackerCombo(attacker))
+		)
 		scheduleResponse(attacker, track, entry)
 	end
 
@@ -1526,11 +1608,43 @@ return function(ctx)
 			end)
 			st.hooks[key] = nil
 		end
+		if st.comboHooks and st.comboHooks[key] then
+			pcall(function()
+				st.comboHooks[key]:Disconnect()
+			end)
+			st.comboHooks[key] = nil
+		end
+		if st.holdHooks and st.holdHooks[key] then
+			pcall(function()
+				st.holdHooks[key]:Disconnect()
+			end)
+			st.holdHooks[key] = nil
+		end
 
 		local conn = ctx.addConnection(animator.AnimationPlayed, function(track)
 			onAttackTrack(player, track)
 		end)
 		st.hooks[key] = conn
+
+		-- Hold-M1: Combo / M1Hold attribute changes → re-scan tracks immediately.
+		st.comboHooks = st.comboHooks or {}
+		st.holdHooks = st.holdHooks or {}
+		st.comboHooks[key] = ctx.addConnection(character:GetAttributeChangedSignal("Combo"), function()
+			if not combatFeaturesOn() then
+				return
+			end
+			for _, track in ipairs(collectPlayingTracks(character)) do
+				onAttackTrack(player, track)
+			end
+		end)
+		st.holdHooks[key] = ctx.addConnection(character:GetAttributeChangedSignal("M1Hold"), function()
+			if character:GetAttribute("M1Hold") == true then
+				for _, track in ipairs(collectPlayingTracks(character)) do
+					onAttackTrack(player, track)
+				end
+			end
+		end)
+
 		debugLog("hooked", player.Name)
 	end
 
@@ -1541,6 +1655,21 @@ return function(ctx)
 				st.hooks[key]:Disconnect()
 			end)
 			st.hooks[key] = nil
+		end
+		if st.comboHooks and st.comboHooks[key] then
+			pcall(function()
+				st.comboHooks[key]:Disconnect()
+			end)
+			st.comboHooks[key] = nil
+		end
+		if st.holdHooks and st.holdHooks[key] then
+			pcall(function()
+				st.holdHooks[key]:Disconnect()
+			end)
+			st.holdHooks[key] = nil
+		end
+		if st.swingState then
+			st.swingState[player.UserId] = nil
 		end
 	end
 
@@ -1559,6 +1688,7 @@ return function(ctx)
 			flag("Gakuran Combat Visualizer", false) and numFlag("Gakuran Viz Range", 28) or 0
 		) + 6
 
+		local anyHold = false
 		for _, player in ipairs(Players:GetPlayers()) do
 			if player ~= LocalPlayer then
 				local character = getCharacter(player)
@@ -1566,6 +1696,11 @@ return function(ctx)
 				if character and root then
 					local dist = (root.Position - myRoot.Position).Magnitude
 					if dist <= range then
+						if character:GetAttribute("M1Hold") == true
+							or character:GetAttribute("CombatAttacking") == true
+						then
+							anyHold = true
+						end
 						for _, track in ipairs(collectPlayingTracks(character)) do
 							onAttackTrack(player, track)
 						end
@@ -1573,6 +1708,7 @@ return function(ctx)
 				end
 			end
 		end
+		st.nearbyHoldM1 = anyHold
 	end
 
 	-- Setup --------------------------------------------------------------
@@ -1680,7 +1816,9 @@ return function(ctx)
 			-- High-rate track scan (AnimationPlayed alone is unreliable for remote combat).
 			if combatFeaturesOn() then
 				scanAccum = scanAccum + dt
-				if scanAccum >= 0.03 then
+				-- Hold-M1 strings need a faster poll so 2nd/3rd/4th aren't missed.
+				local interval = st.nearbyHoldM1 and 0.016 or 0.03
+				if scanAccum >= interval then
 					scanAccum = 0
 					pcall(scanNearbyAttacks)
 				end
