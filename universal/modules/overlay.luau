@@ -53,27 +53,14 @@ return function(ctx)
 		float = 10,
 		suffix = " studs",
 	})
-	targetingSection:AddLabel("Sync With ESP uses its team, range, and color settings")
-
-	local targetingLockSection = ctx.columns.combatRight:AddSection("Lock Settings")
-	targetingLockSection:AddToggle({
-		text = "Lock Current Target",
-		flag = "Universal Aim Lock Preview",
-		state = false,
-	})
-	targetingLockSection:AddToggle({
-		text = "Auto Switch When Lost",
-		flag = "Universal Aim Auto Switch",
-		state = true,
-	})
-	targetingLockSection:AddToggle({text = "Show Target Line", flag = "Universal Aim Show Line", state = true})
-	targetingLockSection:AddColor({
+	targetingSection:AddToggle({text = "Show Target Line", flag = "Universal Aim Show Line", state = true})
+	targetingSection:AddColor({
 		text = "Target Color",
 		flag = "Universal Aim Color",
 		color = Color3.fromRGB(255, 82, 96),
 	})
-	ctx.refs.targetingStatus = targetingLockSection:AddLabel("Target: none")
-	targetingLockSection:AddLabel("Targeting only selects and marks an ESP target")
+	ctx.refs.targetingStatus = targetingSection:AddLabel("Target: none")
+	targetingSection:AddLabel("Sync With ESP uses its team, range, and color settings")
 
 	local combatAimSection = ctx.columns.combatRight:AddSection("Combat Aim")
 	combatAimSection:AddToggle({
@@ -329,6 +316,9 @@ return function(ctx)
 			end
 
 			local targetingEnabled = ctx.library.flags["Universal Aim Preview"] == true
+			local lockEnabled = ctx.library.flags["Universal Combat Aim Lock"] == true
+			local silentEnabled = ctx.library.flags["Universal Combat Silent Aim"] == true
+			local acquireTarget = targetingEnabled or lockEnabled or silentEnabled
 			local requestedRadius = math.max(20, tonumber(ctx.library.flags["Universal Aim FOV"]) or 140)
 			local radius = math.min(requestedRadius, math.min(viewport.X, viewport.Y) * 0.47)
 			local _, teamCheck, maxDistance, targetColor = targetingSettings()
@@ -340,15 +330,17 @@ return function(ctx)
 			fovStroke.Color = targetColor
 			targetLine.BackgroundColor3 = targetColor
 
-			if not targetingEnabled then
+			if not acquireTarget then
 				ctx.state.aimTarget = nil
 				targetLine.Visible = false
-				ctx.refs.targetingStatus.Text = "Target: none"
+				if ctx.refs.targetingStatus then
+					ctx.refs.targetingStatus.Text = "Target: none"
+				end
 			else
 				local localRoot = ctx.getRoot()
 				local combatLockOnly = ctx.library.flags["Universal Combat Lock Only"] == true
-				local locked = ctx.library.flags["Universal Aim Lock Preview"] == true or combatLockOnly
-				local autoSwitch = ctx.library.flags["Universal Aim Auto Switch"] ~= false and not combatLockOnly
+				local locked = combatLockOnly or lockEnabled
+				local autoSwitch = not locked
 				local target
 
 				if locked and ctx.state.aimTarget then
@@ -379,7 +371,7 @@ return function(ctx)
 					ctx.state.aimTarget = nil
 				end
 
-				if target then
+				if target and ctx.refs.targetingStatus then
 					ctx.refs.targetingStatus.Text = string.format(
 						"Target: %s | %dm",
 						target.player.DisplayName,
@@ -393,13 +385,12 @@ return function(ctx)
 						targetLine.Visible = false
 					end
 				else
-					ctx.refs.targetingStatus.Text = locked and "Target: lost" or "Target: none in radius"
+					if ctx.refs.targetingStatus then
+						ctx.refs.targetingStatus.Text = locked and "Target: lost" or "Target: none in radius"
+					end
 					targetLine.Visible = false
 				end
 			end
-
-			local lockEnabled = ctx.library.flags["Universal Combat Aim Lock"] == true
-			local silentEnabled = ctx.library.flags["Universal Combat Silent Aim"] == true
 
 			if lockEnabled or silentEnabled then
 				local targetPlayer = ctx.state.aimTarget

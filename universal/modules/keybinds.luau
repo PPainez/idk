@@ -59,16 +59,13 @@ return function(ctx)
 		end,
 	})
 	visualBinds:AddBind({
-		text = "Lock Target",
+		text = "Toggle Aim Lock",
 		flag = "Universal Bind Aim Lock",
 		key = "Q",
 		mode = "toggle",
 		nomouse = true,
 		callback = function(enabled)
-			ctx.setToggle("Universal Aim Lock Preview", enabled == true)
-			if not enabled then
-				ctx.state.aimTarget = nil
-			end
+			ctx.setToggle("Universal Combat Aim Lock", enabled == true)
 		end,
 	})
 	visualBinds:AddLabel("Menu and panic binds are available in Settings")
