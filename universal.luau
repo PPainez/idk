@@ -1,4 +1,589 @@
+--[[
+    xanhub | Universal
 
+    Runs through main/loader.luau or standalone.
+    General client-side movement, targeting, visual, ESP, and utility tools.
+    No anti-cheat bypass, remote abuse, or game-specific hooks are included.
+]]
+
+local runtime = ...
+local env = (type(getgenv) == "function" and getgenv()) or _G
+
+if type(runtime) ~= "table" then
+    runtime = env.XANHUB_RUNTIME
+end
+
+local DEFAULT_UI_URL = "https://raw.githubusercontent.com/PPainez/idk/refs/heads/main/ui.luau"
+local UI_URL = type(runtime) == "table" and runtime.uiUrl or DEFAULT_UI_URL
+
+local function acquireLibrary()
+    if type(runtime) == "table"
+        and type(runtime.library) == "table"
+        and not runtime.library.unloaded then
+        return runtime.library
+    end
+
+    local source = game:HttpGet(UI_URL, true)
+    local chunk, compileError = loadstring(source)
+    assert(chunk, "[xanhub universal] UI compile failed: " .. tostring(compileError))
+
+    local loaded = chunk()
+    assert(type(loaded) == "table", "[xanhub universal] UI library returned an invalid value")
+
+    runtime = type(runtime) == "table" and runtime or {}
+    runtime.library = loaded
+    runtime.uiUrl = UI_URL
+    runtime.placeId = game.PlaceId
+    runtime.universeId = game.GameId
+    env.XANHUB_RUNTIME = runtime
+    return loaded
+end
+
+local library = acquireLibrary()
+library:SetTitle("xanhub | Universal")
+library:SetAccent(Color3.fromRGB(0, 170, 255))
+library:SetTweening(true)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local VirtualUser = game:GetService("VirtualUser")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local state = {
+    unloading = false,
+    connections = {},
+    original = {},
+    esp = {},
+    overlays = {},
+    fly = {},
+    noclipOriginal = setmetatable({}, {__mode = "k"}),
+    movementOriginal = setmetatable({}, {__mode = "k"}),
+    effectOriginal = setmetatable({}, {__mode = "k"}),
+}
+
+local function notify(message, duration)
+    if library and library.SendNotification then
+        library:SendNotification(duration or 2, tostring(message))
+    else
+        print("[xanhub universal] " .. tostring(message))
+    end
+end
+
+local function addConnection(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(state.connections, connection)
+    return connection
+end
+
+local function disconnect(connection)
+    if connection then
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+end
+
+local function getCharacter()
+    return LocalPlayer.Character
+end
+
+local function getHumanoid(character)
+    character = character or getCharacter()
+    return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getRoot(character)
+    character = character or getCharacter()
+    return character and (
+        character:FindFirstChild("HumanoidRootPart")
+        or character.PrimaryPart
+    )
+end
+
+local function option(flag)
+    return library.options and library.options[flag]
+end
+
+local function setToggle(flag, enabled)
+    local control = option(flag)
+    if control and type(control.SetState) == "function" then
+        control:SetState(enabled == true)
+    else
+        library.flags[flag] = enabled == true
+    end
+end
+
+local function toggle(flag)
+    setToggle(flag, library.flags[flag] ~= true)
+end
+
+local function safeClipboard(text)
+    local setter = type(setclipboard) == "function" and setclipboard
+        or type(toclipboard) == "function" and toclipboard
+        or nil
+
+    if not setter then
+        notify("Clipboard is unavailable", 3)
+        return false
+    end
+
+    local ok = pcall(setter, tostring(text))
+    notify(ok and "Copied to clipboard" or "Clipboard failed", ok and 2 or 3)
+    return ok
+end
+
+local function createRounded(parent, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or 6)
+    corner.Parent = parent
+    return corner
+end
+
+local function createOverlayRoot()
+    if state.overlays.root and state.overlays.root.Parent then
+        return state.overlays.root
+    end
+
+    local root = Instance.new("Frame")
+    root.Name = "UniversalOverlay"
+    root.Size = UDim2.fromScale(1, 1)
+    root.BackgroundTransparency = 1
+    root.BorderSizePixel = 0
+    root.Active = false
+    root.ZIndex = 500
+    root.Parent = library.base
+    state.overlays.root = root
+    return root
+end
+
+local function tween(object, properties, duration)
+    local ok, result = pcall(function()
+        local animation = TweenService:Create(
+            object,
+            TweenInfo.new(duration or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            properties
+        )
+        animation:Play()
+        return animation
+    end)
+    if not ok then
+        for property, value in pairs(properties) do
+            pcall(function()
+                object[property] = value
+            end)
+        end
+    end
+    return ok and result or nil
+end
+
+-- UI -------------------------------------------------------------------------
+
+local homeTab = library:AddTab("Home", 1)
+local combatTab = library:AddTab("Combat", 2)
+local visualsTab = library:AddTab("Visuals", 3)
+local playerTab = library:AddTab("Player", 4)
+local worldTab = library:AddTab("World", 5)
+local utilityTab = library:AddTab("Utility", 6)
+local bindsTab = library:AddTab("Keybinds", 7)
+
+local homeLeft = homeTab:AddColumn()
+local homeRight = homeTab:AddColumn()
+local combatLeft = combatTab:AddColumn()
+local combatRight = combatTab:AddColumn()
+local visualsLeft = visualsTab:AddColumn()
+local visualsRight = visualsTab:AddColumn()
+local playerLeft = playerTab:AddColumn()
+local playerRight = playerTab:AddColumn()
+local worldLeft = worldTab:AddColumn()
+local worldRight = worldTab:AddColumn()
+local utilityLeft = utilityTab:AddColumn()
+local utilityRight = utilityTab:AddColumn()
+local bindsLeft = bindsTab:AddColumn()
+local bindsRight = bindsTab:AddColumn()
+
+local intro = homeLeft:AddSection("xanhub Universal")
+intro:AddLabel("Loaded for: " .. tostring(game.Name))
+intro:AddLabel("Place ID: " .. tostring(game.PlaceId))
+intro:AddLabel("Universe ID: " .. tostring(game.GameId))
+intro:AddLabel("General client tools with complete unload restoration")
+
+local quick = homeRight:AddSection("Quick Actions")
+quick:AddButton({
+    text = "Copy Place ID",
+    callback = function()
+        safeClipboard(game.PlaceId)
+    end,
+})
+quick:AddButton({
+    text = "Copy Job ID",
+    callback = function()
+        safeClipboard(game.JobId)
+    end,
+})
+quick:AddButton({
+    text = "Rejoin Server",
+    callback = function()
+        notify("Rejoining...")
+        local ok = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+        end)
+        if not ok then
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+        end
+    end,
+})
+
+local runtimeSection = homeRight:AddSection("Runtime")
+local runtimeStatus = runtimeSection:AddLabel("Status: initializing")
+runtimeSection:AddButton({
+    text = "Print Active Flags",
+    callback = function()
+        for flag, value in pairs(library.flags) do
+            if value == true then
+                print("[xanhub active]", flag)
+            end
+        end
+    end,
+})
+
+-- Movement module ------------------------------------------------------------
+
+local movementSection = playerLeft:AddSection("Movement")
+movementSection:AddToggle({
+    text = "Walk Speed Override [RISK]",
+    flag = "Universal Speed Enabled",
+    state = false,
+})
+movementSection:AddSlider({
+    text = "Walk Speed",
+    flag = "Universal Walk Speed",
+    min = 8,
+    max = 250,
+    value = 32,
+    float = 1,
+})
+movementSection:AddToggle({
+    text = "Jump Override [RISK]",
+    flag = "Universal Jump Enabled",
+    state = false,
+})
+movementSection:AddSlider({
+    text = "Jump Power",
+    flag = "Universal Jump Power",
+    min = 20,
+    max = 250,
+    value = 70,
+    float = 1,
+})
+movementSection:AddToggle({
+    text = "Infinite Jump [RISK]",
+    flag = "Universal Infinite Jump",
+    state = false,
+})
+
+local advancedMovement = playerRight:AddSection("Advanced Movement")
+advancedMovement:AddToggle({
+    text = "Fly [RISK]",
+    flag = "Universal Fly",
+    state = false,
+})
+advancedMovement:AddSlider({
+    text = "Fly Speed",
+    flag = "Universal Fly Speed",
+    min = 10,
+    max = 300,
+    value = 70,
+    float = 5,
+})
+advancedMovement:AddToggle({
+    text = "Noclip [RISK]",
+    flag = "Universal Noclip",
+    state = false,
+})
+advancedMovement:AddToggle({
+    text = "Ctrl + Click Teleport [RISK]",
+    flag = "Universal Click Teleport",
+    state = false,
+})
+advancedMovement:AddLabel("Risk features are client-side and may be detected by games")
+
+local function setupMovementRuntime()
+    local movementConnection
+    local infiniteJumpConnection
+    local clickTeleportConnection
+
+    local function rememberHumanoid(humanoid)
+        if humanoid and not state.movementOriginal[humanoid] then
+            state.movementOriginal[humanoid] = {
+                WalkSpeed = humanoid.WalkSpeed,
+                JumpPower = humanoid.JumpPower,
+                JumpHeight = humanoid.JumpHeight,
+                UseJumpPower = humanoid.UseJumpPower,
+                AutoRotate = humanoid.AutoRotate,
+                PlatformStand = humanoid.PlatformStand,
+            }
+        end
+    end
+
+    local function restoreHumanoid(humanoid)
+        local original = humanoid and state.movementOriginal[humanoid]
+        if humanoid and original and humanoid.Parent then
+            pcall(function()
+                humanoid.WalkSpeed = original.WalkSpeed
+                humanoid.JumpPower = original.JumpPower
+                humanoid.JumpHeight = original.JumpHeight
+                humanoid.UseJumpPower = original.UseJumpPower
+                humanoid.AutoRotate = original.AutoRotate
+                humanoid.PlatformStand = original.PlatformStand
+            end)
+        end
+    end
+
+    movementConnection = addConnection(RunService.Heartbeat, function()
+        if state.unloading then
+            return
+        end
+
+        local humanoid = getHumanoid()
+        if not humanoid then
+            return
+        end
+
+        rememberHumanoid(humanoid)
+
+        if library.flags["Universal Speed Enabled"] then
+            humanoid.WalkSpeed = tonumber(library.flags["Universal Walk Speed"]) or 32
+        elseif not library.flags["Universal Fly"] then
+            local original = state.movementOriginal[humanoid]
+            if original then
+                humanoid.WalkSpeed = original.WalkSpeed
+            end
+        end
+
+        if library.flags["Universal Jump Enabled"] then
+            local value = tonumber(library.flags["Universal Jump Power"]) or 70
+            if humanoid.UseJumpPower then
+                humanoid.JumpPower = value
+            else
+                humanoid.JumpHeight = math.max(7.2, value / 7)
+            end
+        else
+            local original = state.movementOriginal[humanoid]
+            if original then
+                humanoid.JumpPower = original.JumpPower
+                humanoid.JumpHeight = original.JumpHeight
+            end
+        end
+    end)
+
+    infiniteJumpConnection = addConnection(UserInputService.JumpRequest, function()
+        if library.flags["Universal Infinite Jump"] then
+            local humanoid = getHumanoid()
+            if humanoid then
+                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end
+    end)
+
+    local mouse = LocalPlayer:GetMouse()
+    clickTeleportConnection = addConnection(mouse.Button1Down, function()
+        if not library.flags["Universal Click Teleport"]
+            or not UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            return
+        end
+
+        local root = getRoot()
+        if root and mouse.Hit then
+            root.CFrame = mouse.Hit + Vector3.new(0, 3, 0)
+        end
+    end)
+
+    library:AddCleanup(function()
+        disconnect(movementConnection)
+        disconnect(infiniteJumpConnection)
+        disconnect(clickTeleportConnection)
+        for humanoid in pairs(state.movementOriginal) do
+            restoreHumanoid(humanoid)
+        end
+    end)
+end
+
+local function setupFlyRuntime()
+    local flyConnection
+
+    local function stopFly()
+        disconnect(flyConnection)
+        flyConnection = nil
+
+        if state.fly.velocity then
+            pcall(function()
+                state.fly.velocity:Destroy()
+            end)
+        end
+        if state.fly.gyro then
+            pcall(function()
+                state.fly.gyro:Destroy()
+            end)
+        end
+
+        local humanoid = getHumanoid()
+        if humanoid then
+            local original = state.movementOriginal[humanoid]
+            humanoid.PlatformStand = original and original.PlatformStand or false
+            humanoid.AutoRotate = original and original.AutoRotate or true
+        end
+
+        state.fly.velocity = nil
+        state.fly.gyro = nil
+    end
+
+    local function startFly()
+        stopFly()
+
+        local root = getRoot()
+        local humanoid = getHumanoid()
+        if not root or not humanoid then
+            setToggle("Universal Fly", false)
+            return
+        end
+
+        if not state.movementOriginal[humanoid] then
+            state.movementOriginal[humanoid] = {
+                WalkSpeed = humanoid.WalkSpeed,
+                JumpPower = humanoid.JumpPower,
+                JumpHeight = humanoid.JumpHeight,
+                UseJumpPower = humanoid.UseJumpPower,
+                AutoRotate = humanoid.AutoRotate,
+                PlatformStand = humanoid.PlatformStand,
+            }
+        end
+
+        local velocity = Instance.new("BodyVelocity")
+        velocity.Name = "xanhub_fly_velocity"
+        velocity.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+        velocity.Velocity = Vector3.zero
+        velocity.Parent = root
+
+        local gyro = Instance.new("BodyGyro")
+        gyro.Name = "xanhub_fly_gyro"
+        gyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+        gyro.P = 30000
+        gyro.CFrame = root.CFrame
+        gyro.Parent = root
+
+        state.fly.velocity = velocity
+        state.fly.gyro = gyro
+        humanoid.PlatformStand = true
+        humanoid.AutoRotate = false
+
+        flyConnection = addConnection(RunService.RenderStepped, function()
+            if state.unloading or not library.flags["Universal Fly"] then
+                return
+            end
+
+            local camera = Workspace.CurrentCamera
+            local currentRoot = getRoot()
+            if not camera or not currentRoot or velocity.Parent ~= currentRoot then
+                setToggle("Universal Fly", false)
+                return
+            end
+
+            local direction = Vector3.zero
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then direction += camera.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then direction -= camera.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then direction -= camera.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then direction += camera.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then direction += Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then direction -= Vector3.new(0, 1, 0) end
+
+            local speed = tonumber(library.flags["Universal Fly Speed"]) or 70
+            velocity.Velocity = direction.Magnitude > 0 and direction.Unit * speed or Vector3.zero
+            gyro.CFrame = CFrame.lookAt(currentRoot.Position, currentRoot.Position + camera.CFrame.LookVector)
+        end)
+    end
+
+    local flyOption = option("Universal Fly")
+    if flyOption then
+        flyOption.callback = function(enabled)
+            if enabled then
+                startFly()
+            else
+                stopFly()
+            end
+        end
+    end
+
+    library:AddCleanup(stopFly)
+end
+
+local function setupNoclipRuntime()
+    local connection
+
+    local function restore()
+        for part, canCollide in pairs(state.noclipOriginal) do
+            if part and part.Parent then
+                pcall(function()
+                    part.CanCollide = canCollide
+                end)
+            end
+            state.noclipOriginal[part] = nil
+        end
+    end
+
+    connection = addConnection(RunService.Stepped, function()
+        if not library.flags["Universal Noclip"] then
+            restore()
+            return
+        end
+
+        local character = getCharacter()
+        if not character then
+            return
+        end
+
+        for _, object in ipairs(character:GetDescendants()) do
+            if object:IsA("BasePart") then
+                if state.noclipOriginal[object] == nil then
+                    state.noclipOriginal[object] = object.CanCollide
+                end
+                object.CanCollide = false
+            end
+        end
+    end)
+
+    local control = option("Universal Noclip")
+    if control then
+        control.callback = function(enabled)
+            if not enabled then
+                restore()
+            end
+        end
+    end
+
+    library:AddCleanup(function()
+        disconnect(connection)
+        restore()
+    end)
+end
+
+-- ESP module -----------------------------------------------------------------
+
+local espSection = visualsLeft:AddSection("Player ESP")
+espSection:AddToggle({text = "Enabled", flag = "Universal ESP", state = false})
+espSection:AddToggle({text = "Highlights", flag = "Universal ESP Highlights", state = false})
+espSection:AddToggle({text = "Names", flag = "Universal ESP Names", state = true})
+espSection:AddToggle({text = "Health Bar", flag = "Universal ESP Health", state = true})
+espSection:AddToggle({text = "Distance", flag = "Universal ESP Distance", state = true})
+espSection:AddToggle({text = "Team Check", flag = "Universal ESP Team Check", state = false})
+espSection:AddSlider({
     text = "ESP Scale",
     flag = "Universal ESP Scale",
     min = 50,
