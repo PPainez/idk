@@ -2,8 +2,8 @@
     xanhub | universal | modules | esp
 
     Signature UI-native ESP renderer.
-    Built for smooth scaling, strong readability, target integration,
-    off-screen indicators, visibility dimming, and complete cleanup.
+    Frame-synchronized, root-anchored, pixel-snapped projection for stable
+    camera movement, strong readability, target integration, and cleanup.
 ]]
 
 local R15_BONES = {
@@ -58,6 +58,14 @@ local function dampVector2(current, target, speed, deltaTime)
     end
     local alpha = 1 - math.exp(-math.max(speed, 0.01) * math.max(deltaTime, 0))
     return current:Lerp(target, alpha)
+end
+
+local function snap(value)
+    return math.floor(value + 0.5)
+end
+
+local function snapVector2(value)
+    return Vector2.new(snap(value.X), snap(value.Y))
 end
 
 local function getPlayerLabel(player)
@@ -267,16 +275,8 @@ return function(ctx)
     })
 
     local performanceSection = ctx.columns.visualsRight:AddSection("ESP Performance")
-    performanceSection:AddToggle({text = "Adaptive Refresh", flag = "Universal ESP Adaptive", state = true})
-    performanceSection:AddSlider({
-        text = "Refresh Rate",
-        flag = "Universal ESP Refresh Rate",
-        min = 20,
-        max = 120,
-        value = 60,
-        float = 5,
-        suffix = " Hz",
-    })
+    performanceSection:AddLabel("Frame Sync: after camera update")
+    performanceSection:AddLabel("Projection: root-anchored + pixel-snapped")
     performanceSection:AddSlider({
         text = "Maximum Players",
         flag = "Universal ESP Max Players",
@@ -285,7 +285,7 @@ return function(ctx)
         value = 24,
         float = 1,
     })
-    local rendererStatus = performanceSection:AddLabel("Renderer: UI-native / waiting")
+    local rendererStatus = performanceSection:AddLabel("Renderer: stable frame-sync / waiting")
 
     local colorsSection = ctx.columns.visualsRight:AddSection("ESP Colors")
     colorsSection:AddColor({text = "Enemy Color", flag = "Universal ESP Color", color = DEFAULT_ACCENT})
@@ -302,11 +302,17 @@ return function(ctx)
     local function setupESPRuntime()
         local overlayRoot = ctx.createOverlayRoot()
         local renderConnection
+        local renderBound = false
+        local renderStepName = "xanhub_esp_stable_" .. tostring(math.floor(os.clock() * 1000000))
         local playerRemovingConnection
         local previewConnection
-        local renderAccumulator = 0
         local statusAccumulator = 0
         local previewHost
+
+        overlayRoot.AnchorPoint = Vector2.new(0, 0)
+        overlayRoot.Position = UDim2.fromScale(0, 0)
+        overlayRoot.Size = UDim2.fromScale(1, 1)
+        overlayRoot.ClipsDescendants = false
 
         local function flag(name, default)
             local value = ctx.library.flags[name]
@@ -445,6 +451,33 @@ return function(ctx)
             safeDestroy(entry.healthText)
             safeDestroy(entry.offscreen)
             ctx.state.esp[player] = nil
+        end
+
+        local function measureStableBounds(character, rootPart)
+            local width = 3.2
+            local height = 5.8
+            local offsetY = 0.35
+
+            local humanoid = ctx.getHumanoid(character)
+            local ok, boundingCFrame, boundingSize = pcall(function()
+                local cframe, size = character:GetBoundingBox()
+                return cframe, size
+            end)
+
+            if ok and typeof(boundingCFrame) == "CFrame" and typeof(boundingSize) == "Vector3" then
+                local isR15 = humanoid and humanoid.RigType == Enum.HumanoidRigType.R15
+                width = clamp(boundingSize.X, isR15 and 2.2 or 2.0, isR15 and 4.8 or 4.4)
+                height = clamp(boundingSize.Y, isR15 and 5.0 or 4.6, isR15 and 8.5 or 7.5)
+
+                local localOffset = rootPart.CFrame:PointToObjectSpace(boundingCFrame.Position)
+                offsetY = clamp(localOffset.Y, -0.75, 1.75)
+            elseif humanoid and humanoid.RigType == Enum.HumanoidRigType.R6 then
+                width = 3
+                height = 5.2
+                offsetY = 0.2
+            end
+
+            return width, height, offsetY
         end
 
         local function createEntry(player, character)
@@ -631,10 +664,15 @@ return function(ctx)
             highlight.Enabled = false
             highlight.Parent = character
 
+            local stableWidth, stableHeight, stableOffsetY = measureStableBounds(character, rootPart)
+
             local entry = {
                 player = player,
                 character = character,
                 rootPart = rootPart,
+                stableWidth = stableWidth,
+                stableHeight = stableHeight,
+                stableOffsetY = stableOffsetY,
                 root = root,
                 glow = glow,
                 glowStroke = glowStroke,
@@ -678,62 +716,52 @@ return function(ctx)
             return entry
         end
 
-        local function getBounds(camera, character)
-            local ok, boundingCFrame, boundingSize = pcall(function()
-                local cframe, size = character:GetBoundingBox()
-                return cframe, size
-            end)
-
-            if not ok or typeof(boundingCFrame) ~= "CFrame" or typeof(boundingSize) ~= "Vector3" then
+        local function getBounds(camera, entry)
+            local rootPart = entry and entry.rootPart
+            if not rootPart or not rootPart.Parent then
                 return nil
             end
 
-            -- Protect against intentionally huge accessories or map-attached character parts.
-            boundingSize = Vector3.new(
-                clamp(boundingSize.X, 1.5, 12),
-                clamp(boundingSize.Y, 3, 16),
-                clamp(boundingSize.Z, 1.5, 12)
-            )
+            local width = clamp(entry.stableWidth or 3.2, 2, 5)
+            local height = clamp(entry.stableHeight or 5.8, 4.5, 9)
+            local offsetY = clamp(entry.stableOffsetY or 0.35, -0.75, 1.75)
+
+            -- Camera-facing, root-anchored bounds stay glued to the character.
+            -- Limb animations, accessories, and camera turns cannot reshape them.
+            local center = rootPart.Position + Vector3.new(0, offsetY, 0)
+            local worldUp = Vector3.new(0, height * 0.5, 0)
+            local cameraRight = camera.CFrame.RightVector * (width * 0.5)
+            local worldPoints = {
+                center + worldUp - cameraRight,
+                center + worldUp + cameraRight,
+                center - worldUp - cameraRight,
+                center - worldUp + cameraRight,
+            }
 
             local minX, minY = math.huge, math.huge
             local maxX, maxY = -math.huge, -math.huge
-            local pointsInFront = 0
-
-            for x = -1, 1, 2 do
-                for y = -1, 1, 2 do
-                    for z = -1, 1, 2 do
-                        local offset = Vector3.new(
-                            boundingSize.X * 0.5 * x,
-                            boundingSize.Y * 0.5 * y,
-                            boundingSize.Z * 0.5 * z
-                        )
-                        local point = camera:WorldToViewportPoint(boundingCFrame:PointToWorldSpace(offset))
-                        if point.Z > 0.05 then
-                            pointsInFront += 1
-                            minX = math.min(minX, point.X)
-                            minY = math.min(minY, point.Y)
-                            maxX = math.max(maxX, point.X)
-                            maxY = math.max(maxY, point.Y)
-                        end
-                    end
+            for _, worldPoint in ipairs(worldPoints) do
+                local point = camera:WorldToViewportPoint(worldPoint)
+                if point.Z <= 0.05 then
+                    return nil
                 end
-            end
-
-            if pointsInFront < 2 then
-                return nil
+                minX = math.min(minX, point.X)
+                minY = math.min(minY, point.Y)
+                maxX = math.max(maxX, point.X)
+                maxY = math.max(maxY, point.Y)
             end
 
             local viewport = camera.ViewportSize
-            local capX = viewport.X * 2
-            local capY = viewport.Y * 2
-            minX = clamp(minX - 3, -capX, capX)
-            maxX = clamp(maxX + 3, -capX, capX)
-            minY = clamp(minY - 3, -capY, capY)
-            maxY = clamp(maxY + 3, -capY, capY)
+            local projectedHeight = maxY - minY
+            local padding = clamp(projectedHeight * 0.018, 1, 4)
+            minX = snap(minX - padding)
+            maxX = snap(maxX + padding)
+            minY = snap(minY - padding)
+            maxY = snap(maxY + padding)
 
-            local width = maxX - minX
-            local height = maxY - minY
-            if width < 3 or height < 6 or width > viewport.X * 2.5 or height > viewport.Y * 2.5 then
+            local boxWidth = maxX - minX
+            local boxHeight = maxY - minY
+            if boxWidth < 3 or boxHeight < 6 then
                 return nil
             end
 
@@ -923,6 +951,9 @@ return function(ctx)
         end
 
         local function claimNametag(layout, x, y, width, height, isTarget, compact)
+            x = snap(x)
+            y = snap(y)
+
             if not layout or not layout.enabled then
                 return x, y, true
             end
@@ -932,39 +963,26 @@ return function(ctx)
                 return x, y, false
             end
 
-            local attempts = isTarget and 6 or (compact and 2 or 4)
-            local step = height + 3
-            for attempt = 0, attempts do
-                local candidateY = math.max(4, y - attempt * step)
-                local rectangle = {
-                    left = x,
-                    top = candidateY,
-                    right = x + width,
-                    bottom = candidateY + height,
-                }
-                local blocked = false
-                for _, occupied in ipairs(layout.occupied) do
-                    if rectanglesOverlap(rectangle, occupied, 3) then
-                        blocked = true
-                        break
+            local rectangle = {
+                left = x,
+                top = y,
+                right = x + width,
+                bottom = y + height,
+            }
+
+            for _, occupied in ipairs(layout.occupied) do
+                if rectanglesOverlap(rectangle, occupied, compact and 1 or 3) then
+                    if not isTarget then
+                        layout.hidden += 1
+                        return x, y, false
                     end
-                end
-                if not blocked then
-                    table.insert(layout.occupied, rectangle)
-                    layout.count += 1
-                    return x, candidateY, true
+                    break
                 end
             end
 
-            if isTarget then
-                local rectangle = {left = x, top = y, right = x + width, bottom = y + height}
-                table.insert(layout.occupied, rectangle)
-                layout.count += 1
-                return x, y, true
-            end
-
-            layout.hidden += 1
-            return x, y, false
+            table.insert(layout.occupied, rectangle)
+            layout.count += 1
+            return x, y, true
         end
 
         local function updateOffscreen(entry, camera, displayColor, distance, isTarget, visible)
@@ -1004,7 +1022,7 @@ return function(ctx)
             local angle = math.deg(math.atan2(direction.Y, direction.X)) + 90
 
             offscreen.Visible = true
-            offscreen.Position = UDim2.fromOffset(edge.X, edge.Y)
+            offscreen.Position = UDim2.fromOffset(snap(edge.X), snap(edge.Y))
             offscreen.Size = UDim2.fromOffset(isTarget and 112 or 92, isTarget and 36 or 30)
             offscreen.BackgroundTransparency = isTarget and 0.04 or 0.14
             entry.offscreenStroke.Color = displayColor
@@ -1066,7 +1084,7 @@ return function(ctx)
             entry.highlight.Adornee = character
             setEntryDepth(entry, renderIndex, isTarget)
 
-            local bounds = getBounds(camera, character)
+            local bounds = getBounds(camera, entry)
             local lineOfSight = checkLineOfSight(entry, camera, rootPart.Position)
             local hiddenByOcclusion = flag("Universal ESP Hide Occluded", false) and not lineOfSight and not isTarget
 
@@ -1084,14 +1102,11 @@ return function(ctx)
             entry.offscreen.Visible = false
             entry.root.Visible = true
 
-            local rawTopLeft = bounds.topLeft
-            local rawBottomRight = bounds.bottomRight
-            local smoothSpeed = isTarget and 24 or 18
-            entry.displayTopLeft = dampVector2(entry.displayTopLeft, rawTopLeft, smoothSpeed, deltaTime)
-            entry.displayBottomRight = dampVector2(entry.displayBottomRight, rawBottomRight, smoothSpeed, deltaTime)
-
-            local topLeft = entry.displayTopLeft
-            local bottomRight = entry.displayBottomRight
+            -- Exact post-camera projection prevents trailing during camera turns.
+            local topLeft = snapVector2(bounds.topLeft)
+            local bottomRight = snapVector2(bounds.bottomRight)
+            entry.displayTopLeft = topLeft
+            entry.displayBottomRight = bottomRight
             local width = math.max(3, bottomRight.X - topLeft.X)
             local height = math.max(6, bottomRight.Y - topLeft.Y)
             local centerX = (topLeft.X + bottomRight.X) * 0.5
@@ -1128,8 +1143,8 @@ return function(ctx)
 
             local showFill = boxEnabled and not compact and flag("Universal ESP Box Fill", false)
             entry.box.Visible = showFull or showFill
-            entry.box.Position = UDim2.fromOffset(topLeft.X, topLeft.Y)
-            entry.box.Size = UDim2.fromOffset(width, height)
+            entry.box.Position = UDim2.fromOffset(snap(topLeft.X), snap(topLeft.Y))
+            entry.box.Size = UDim2.fromOffset(snap(width), snap(height))
             entry.box.BackgroundColor3 = displayColor
             entry.box.BackgroundTransparency = showFill
                 and clamp(1 - fillOpacity * opacity, 0.45, 1)
@@ -1139,8 +1154,8 @@ return function(ctx)
             entry.boxStroke.Transparency = showFull and clamp(1 - opacity * pulse, 0.02, 0.94) or 1
 
             entry.glow.Visible = boxEnabled and not compact and glowStrength > 0 and style ~= "Minimal"
-            entry.glow.Position = UDim2.fromOffset(topLeft.X - 2, topLeft.Y - 2)
-            entry.glow.Size = UDim2.fromOffset(width + 4, height + 4)
+            entry.glow.Position = UDim2.fromOffset(snap(topLeft.X - 2), snap(topLeft.Y - 2))
+            entry.glow.Size = UDim2.fromOffset(snap(width + 4), snap(height + 4))
             entry.glowStroke.Color = displayColor
             entry.glowStroke.Thickness = 3 + glowStrength * (isTarget and 5 or 3)
             entry.glowStroke.Transparency = clamp(0.96 - opacity * glowStrength * pulse * 0.48, 0.43, 0.97)
@@ -1165,22 +1180,21 @@ return function(ctx)
             entry.scanline.Visible = scanlineVisible
             if scanlineVisible then
                 local progress = (os.clock() * (isTarget and 0.92 or 0.58) + entry.scanPhase) % 1
-                entry.scanline.Position = UDim2.fromOffset(topLeft.X + 3, topLeft.Y + 3 + (height - 6) * progress)
-                entry.scanline.Size = UDim2.fromOffset(math.max(4, width - 6), isTarget and 2 or 1)
+                entry.scanline.Position = UDim2.fromOffset(snap(topLeft.X + 3), snap(topLeft.Y + 3 + (height - 6) * progress))
+                entry.scanline.Size = UDim2.fromOffset(snap(math.max(4, width - 6)), isTarget and 2 or 1)
                 entry.scanline.BackgroundColor3 = displayColor
                 entry.scanline.BackgroundTransparency = clamp(0.2 + fade * 0.55, 0.2, 0.86)
             end
 
             local showChevrons = isTarget and flag("Universal ESP Target Chevron", true)
-            local chevronPulse = 1 + math.sin(os.clock() * 5) * 0.08
             entry.chevronLeft.Visible = showChevrons
             entry.chevronRight.Visible = showChevrons
             entry.chevronLeft.TextColor3 = displayColor
             entry.chevronRight.TextColor3 = displayColor
             entry.chevronLeft.TextTransparency = 1 - opacity
             entry.chevronRight.TextTransparency = 1 - opacity
-            entry.chevronLeft.Position = UDim2.fromOffset(topLeft.X - 22 * chevronPulse, centerY - 15)
-            entry.chevronRight.Position = UDim2.fromOffset(bottomRight.X + 2 * chevronPulse, centerY - 15)
+            entry.chevronLeft.Position = UDim2.fromOffset(snap(topLeft.X - 22), snap(centerY - 15))
+            entry.chevronRight.Position = UDim2.fromOffset(snap(bottomRight.X + 2), snap(centerY - 15))
             entry.chevronLeft.Size = UDim2.fromOffset(20, 30)
             entry.chevronRight.Size = UDim2.fromOffset(20, 30)
 
@@ -1214,8 +1228,8 @@ return function(ctx)
             end
             local nameVisible = showName and labelClaimed
             entry.namePill.Visible = nameVisible
-            entry.namePill.Position = UDim2.fromOffset(labelX, labelY)
-            entry.namePill.Size = UDim2.fromOffset(pillWidth, pillHeight)
+            entry.namePill.Position = UDim2.fromOffset(snap(labelX), snap(labelY))
+            entry.namePill.Size = UDim2.fromOffset(snap(pillWidth), snap(pillHeight))
             entry.namePill.BackgroundTransparency = compact
                 and clamp(0.34 + fade * 0.48, 0.3, 0.92)
                 or clamp(0.14 + fade * 0.58 + (lineOfSight and 0 or 0.08), 0.12, 0.9)
@@ -1253,8 +1267,8 @@ return function(ctx)
             local meaningfulHealth = healthRatio <= 0.58
             local healthVisible = showHealth and (not compact or isTarget or meaningfulHealth)
             entry.healthBackground.Visible = healthVisible
-            entry.healthBackground.Position = UDim2.fromOffset(barX, barY)
-            entry.healthBackground.Size = UDim2.fromOffset(compact and 2 or 3, healthHeight)
+            entry.healthBackground.Position = UDim2.fromOffset(snap(barX), snap(barY))
+            entry.healthBackground.Size = UDim2.fromOffset(compact and 2 or 3, snap(healthHeight))
             entry.healthBackground.BackgroundTransparency = clamp(0.04 + fade * 0.68, 0.04, 0.92)
             entry.healthStroke.Transparency = clamp(0.15 + fade * 0.58, 0.15, 0.9)
             entry.healthFill.Size = UDim2.new(1, 0, entry.displayedHealth, 0)
@@ -1449,7 +1463,7 @@ return function(ctx)
             if statusAccumulator >= 0.35 then
                 statusAccumulator = 0
                 rendererStatus.Text = string.format(
-                    "Renderer: layered | %d visible | %d labels%s",
+                    "Renderer: stable-sync | %d visible | %d labels%s",
                     visibleCount,
                     labelLayout.count,
                     labelLayout.hidden > 0 and (" | " .. tostring(labelLayout.hidden) .. " decluttered") or ""
@@ -1642,26 +1656,23 @@ return function(ctx)
             end
         end
 
-        renderConnection = ctx.addConnection(ctx.RunService.RenderStepped, function(deltaTime)
-            renderAccumulator += deltaTime
-
-            local refreshRate = clamp(numberFlag("Universal ESP Refresh Rate", 60), 20, 120)
-            if flag("Universal ESP Adaptive", true) then
-                local playerCount = math.max(0, #ctx.Players:GetPlayers() - 1)
-                if playerCount >= 28 then
-                    refreshRate = math.min(refreshRate, 30)
-                elseif playerCount >= 16 then
-                    refreshRate = math.min(refreshRate, 45)
+        local boundOk = pcall(function()
+            ctx.RunService:BindToRenderStep(
+                renderStepName,
+                Enum.RenderPriority.Camera.Value + 2,
+                function(deltaTime)
+                    render(deltaTime)
                 end
-            end
-
-            local interval = 1 / refreshRate
-            if renderAccumulator >= interval then
-                local elapsed = renderAccumulator
-                renderAccumulator = 0
-                render(elapsed)
-            end
+            )
         end)
+
+        if boundOk then
+            renderBound = true
+        else
+            renderConnection = ctx.addConnection(ctx.RunService.RenderStepped, function(deltaTime)
+                render(deltaTime)
+            end)
+        end
 
         playerRemovingConnection = ctx.addConnection(ctx.Players.PlayerRemoving, destroyEntry)
 
@@ -1688,6 +1699,12 @@ return function(ctx)
         end
 
         ctx.library:AddCleanup(function()
+            if renderBound then
+                pcall(function()
+                    ctx.RunService:UnbindFromRenderStep(renderStepName)
+                end)
+                renderBound = false
+            end
             ctx.disconnect(renderConnection)
             ctx.disconnect(playerRemovingConnection)
             ctx.disconnect(previewConnection)
