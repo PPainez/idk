@@ -1,10 +1,12 @@
 --[[
     xanhub | gakuran | combat
 
-    Auto Parry + rear Auto Dodge.
+    Auto Parry + rear Auto Dodge + Dodge M2 (forced back dash) + attack visualizers.
     Detects known combat attack animations on nearby players, then:
+      - M2 (optional) → force back MoveDirection + Evasive.Evasive()
       - behind attacker → Evasive.Evasive()
       - otherwise → Block.Block() timed to PerfectBlockWindow (~0.125s)
+    Visualizers: semi-transparent screen box + charge fill synced to anim progress.
 
     Attack DB: games/gakuran/modules/attack_db.luau (+ live rebuild from style folders)
 ]]
@@ -16,6 +18,15 @@ return function(ctx)
 	local RunService = ctx.RunService
 	local Workspace = ctx.Workspace or game:GetService("Workspace")
 	local LocalPlayer = Players.LocalPlayer
+	local Camera = Workspace.CurrentCamera
+
+	-- Game-aligned attack colors (CombatConfig.Shared.M2HighlightColors / style accents)
+	local KIND_COLORS = {
+		M1 = Color3.fromRGB(255, 168, 62),
+		M2 = Color3.fromRGB(222, 68, 68),
+		EHit = Color3.fromRGB(255, 220, 90),
+		default = Color3.fromRGB(180, 190, 210),
+	}
 
 	-- UI -----------------------------------------------------------------
 
@@ -123,7 +134,80 @@ return function(ctx)
 		state = false,
 		tip = "If parry fails while stunned, try evasive",
 	})
-	dodge:AddLabel("Front attacks → parry · rear attacks → dodge")
+	dodge:AddToggle({
+		text = "Dodge M2",
+		flag = "Gakuran Dodge M2",
+		state = false,
+		tip = "Back-dash (Evasive DashBack) when someone M2s you",
+	})
+	dodge:AddSlider({
+		text = "M2 Dodge Range",
+		flag = "Gakuran M2 Dodge Range",
+		min = 4,
+		max = 28,
+		value = 14,
+		float = 1,
+		suffix = " studs",
+	})
+	dodge:AddSlider({
+		text = "M2 Dodge Early",
+		flag = "Gakuran M2 Dodge Early",
+		min = 0,
+		max = 250,
+		value = 90,
+		float = 5,
+		suffix = " ms",
+		tip = "How early before M2 hitbox to dash (higher = safer escape)",
+	})
+	dodge:AddLabel("Front → parry · rear → dodge · M2 → back-dash")
+
+	local viz = columns.combatLeft:AddSection("Combat Visualizer")
+	viz:AddToggle({
+		text = "Attack Visualizer",
+		flag = "Gakuran Combat Visualizer",
+		state = false,
+		tip = "Semi-transparent box on attackers that fills as the hit charges",
+	})
+	viz:AddToggle({
+		text = "Show M1",
+		flag = "Gakuran Viz M1",
+		state = true,
+	})
+	viz:AddToggle({
+		text = "Show M2",
+		flag = "Gakuran Viz M2",
+		state = true,
+	})
+	viz:AddToggle({
+		text = "Show EHit",
+		flag = "Gakuran Viz EHit",
+		state = true,
+	})
+	viz:AddSlider({
+		text = "Viz Range",
+		flag = "Gakuran Viz Range",
+		min = 8,
+		max = 60,
+		value = 28,
+		float = 1,
+		suffix = " studs",
+	})
+	viz:AddSlider({
+		text = "Box Opacity",
+		flag = "Gakuran Viz Opacity",
+		min = 10,
+		max = 90,
+		value = 45,
+		float = 5,
+		suffix = "%",
+		tip = "How solid the charge fill is at full charge",
+	})
+	viz:AddToggle({
+		text = "Highlight Character",
+		flag = "Gakuran Viz Highlight",
+		state = true,
+		tip = "Also tint attacker with game-style M2/M1 highlight colors",
+	})
 
 	local dbSec = columns.combatRight:AddSection("Attack Database")
 	ctx.refs.combatDbLabel = dbSec:AddLabel("DB: loading…")
@@ -190,6 +274,8 @@ return function(ctx)
 	st.pingSamples = {}
 	st.avgPingMs = 0
 	st.pingSampleAt = 0
+	st.vizEntries = type(st.vizEntries) == "table" and st.vizEntries or {}
+	st.vizFolder = st.vizFolder
 
 	-- Helpers ------------------------------------------------------------
 
@@ -482,37 +568,423 @@ return function(ctx)
 		end)
 	end
 
-	local function doDodge(reason, meta)
+	local function combatFeaturesOn()
+		return flag("Gakuran Auto Parry", false)
+			or flag("Gakuran Auto Dodge", false)
+			or flag("Gakuran Dodge M2", false)
+			or flag("Gakuran Combat Visualizer", false)
+	end
+
+	local function isM2Entry(entry)
+		if type(entry) ~= "table" then
+			return false
+		end
+		if entry.kind == "M2" then
+			return true
+		end
+		local name = tostring(entry.name or "")
+		return name:find("M2", 1, true) ~= nil
+			or name:find("Momentum", 1, true) ~= nil
+			or name:find("GrappleAttacker", 1, true) ~= nil
+			or name:find("DirtyAttacker", 1, true) ~= nil
+	end
+
+	local function kindColor(kind, name)
+		if isM2Entry({ kind = kind, name = name }) then
+			return KIND_COLORS.M2
+		end
+		if kind == "EHit" or (type(name) == "string" and name:find("EHit", 1, true)) then
+			return KIND_COLORS.EHit
+		end
+		if kind == "M1" then
+			return KIND_COLORS.M1
+		end
+		return KIND_COLORS.default
+	end
+
+	local function forceBackMove(character)
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = getRoot(character)
+		if not humanoid or not root then
+			return function() end
+		end
+		-- Evasive uses MoveDirection; zero → DashBack, else we force world-space back.
+		local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+		local back = look.Magnitude > 0.05 and -look.Unit or Vector3.new(0, 0, 1)
+		pcall(function()
+			humanoid:Move(back, false)
+		end)
+		return function()
+			pcall(function()
+				humanoid:Move(Vector3.zero, false)
+			end)
+		end
+	end
+
+	local function doDodge(reason, meta, opts)
+		opts = type(opts) == "table" and opts or {}
 		local evasive = getEvasiveApi()
 		if not evasive or type(evasive.Evasive) ~= "function" then
 			debugLog("Evasive API missing")
 			setStatus("Evasive module not loaded")
-			return
+			return false
 		end
 		if type(evasive.IsDashActive) == "function" then
 			local active = false
 			pcall(function()
-				active = evasive.IsDashActive(LocalPlayer.Character) == true
+				active = evasive.IsDashActive() == true
 			end)
 			if active then
-				return
+				return false
 			end
 		end
 
+		local character = getCharacter(LocalPlayer) or LocalPlayer.Character
+		-- Evasive refuses while Blocking / attacking.
+		if character and character:GetAttribute("Blocking") then
+			local blockApi = getBlockApi()
+			if blockApi and type(blockApi.Unblock) == "function" then
+				pcall(blockApi.Unblock)
+			end
+		end
+
+		local restoreMove = nil
+		if opts.forceBack then
+			restoreMove = forceBackMove(character)
+		end
+
 		local ok, err = pcall(evasive.Evasive)
+		if restoreMove then
+			-- Keep back input for a frame so LinearVelocity samples MoveDirection.
+			task.delay(0.05, restoreMove)
+		end
+
 		if ok then
 			st.lastDodgeAt = os.clock()
 			setStatus("dodged · " .. tostring(reason or "rear"))
-			debugLog("dodge", reason)
+			debugLog("dodge", reason, opts.forceBack and "back" or "")
 			meta = type(meta) == "table" and meta or {}
-			combatToast("info", "Auto Dodge", string.format(
+			combatToast("info", opts.forceBack and "Dodge M2" or "Auto Dodge", string.format(
 				"%s · %s\n%s",
 				tostring(meta.name or reason or "rear"),
-				tostring(meta.attackerName or "enemy"),
+				tostring(meta.attackerName or meta._attackerName or "enemy"),
 				tostring(reason or "rear attack")
-			), "combat-dodge")
-		else
-			debugLog("dodge failed", err)
+			), opts.forceBack and "combat-dodge-m2" or "combat-dodge")
+			return true
+		end
+
+		debugLog("dodge failed", err)
+		return false
+	end
+
+	-- Visualizer ---------------------------------------------------------
+
+	local function getVizFolder()
+		if st.vizFolder and st.vizFolder.Parent then
+			return st.vizFolder
+		end
+		local parent = nil
+		pcall(function()
+			if ctx.createOverlayRoot then
+				parent = ctx.createOverlayRoot()
+			end
+		end)
+		parent = parent or library.base
+		if not parent then
+			return nil
+		end
+		local folder = Instance.new("Folder")
+		folder.Name = "XanhubCombatViz"
+		folder.Parent = parent
+		st.vizFolder = folder
+		return folder
+	end
+
+	local function destroyViz(userId)
+		local entry = st.vizEntries[userId]
+		if not entry then
+			return
+		end
+		pcall(function()
+			if entry.root then
+				entry.root:Destroy()
+			end
+		end)
+		pcall(function()
+			if entry.highlight then
+				entry.highlight:Destroy()
+			end
+		end)
+		st.vizEntries[userId] = nil
+	end
+
+	local function ensureViz(attacker)
+		local userId = attacker.UserId
+		local existing = st.vizEntries[userId]
+		if existing and existing.root and existing.root.Parent then
+			return existing
+		end
+
+		local folder = getVizFolder()
+		if not folder then
+			return nil
+		end
+
+		local root = Instance.new("Frame")
+		root.Name = "Viz_" .. attacker.Name
+		root.BackgroundTransparency = 1
+		root.BorderSizePixel = 0
+		root.Visible = false
+		root.ZIndex = 720
+		root.Parent = folder
+
+		local box = Instance.new("Frame")
+		box.Name = "Box"
+		box.BackgroundTransparency = 1
+		box.BorderSizePixel = 0
+		box.ZIndex = 721
+		box.Parent = root
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 2
+		stroke.Color = KIND_COLORS.M2
+		stroke.Transparency = 0.15
+		stroke.Parent = box
+
+		local fill = Instance.new("Frame")
+		fill.Name = "ChargeFill"
+		fill.BackgroundColor3 = KIND_COLORS.M2
+		fill.BackgroundTransparency = 0.75
+		fill.BorderSizePixel = 0
+		fill.AnchorPoint = Vector2.new(0, 1)
+		fill.Position = UDim2.fromScale(0, 1)
+		fill.Size = UDim2.fromScale(1, 0)
+		fill.ZIndex = 720
+		fill.Parent = box
+
+		local barBg = Instance.new("Frame")
+		barBg.Name = "BarBg"
+		barBg.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+		barBg.BackgroundTransparency = 0.25
+		barBg.BorderSizePixel = 0
+		barBg.ZIndex = 722
+		barBg.Parent = root
+
+		local barFill = Instance.new("Frame")
+		barFill.Name = "BarFill"
+		barFill.BackgroundColor3 = KIND_COLORS.M2
+		barFill.BorderSizePixel = 0
+		barFill.Size = UDim2.fromScale(0, 1)
+		barFill.ZIndex = 723
+		barFill.Parent = barBg
+
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.BackgroundTransparency = 1
+		label.BorderSizePixel = 0
+		label.Font = Enum.Font.Code
+		label.TextSize = 12
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.TextStrokeTransparency = 0.4
+		label.TextXAlignment = Enum.TextXAlignment.Center
+		label.ZIndex = 724
+		label.Parent = root
+
+		local entry = {
+			root = root,
+			box = box,
+			stroke = stroke,
+			fill = fill,
+			barBg = barBg,
+			barFill = barFill,
+			label = label,
+			highlight = nil,
+			track = nil,
+			entry = nil,
+			expires = 0,
+			attacker = attacker,
+		}
+		st.vizEntries[userId] = entry
+		return entry
+	end
+
+	local function kindAllowed(kind, name)
+		if isM2Entry({ kind = kind, name = name }) then
+			return flag("Gakuran Viz M2", true)
+		end
+		if kind == "EHit" or (type(name) == "string" and name:find("EHit", 1, true)) then
+			return flag("Gakuran Viz EHit", true)
+		end
+		return flag("Gakuran Viz M1", true)
+	end
+
+	local function startVisualizer(attacker, track, dbEntry)
+		if not flag("Gakuran Combat Visualizer", false) then
+			return
+		end
+		if not kindAllowed(dbEntry.kind, dbEntry.name) then
+			return
+		end
+		local vizEntry = ensureViz(attacker)
+		if not vizEntry then
+			return
+		end
+		vizEntry.track = track
+		vizEntry.entry = dbEntry
+		vizEntry.expires = os.clock() + math.max(0.45, (tonumber(dbEntry.hitDelay) or 0.35) + 0.35)
+		vizEntry.attacker = attacker
+
+		local color = kindColor(dbEntry.kind, dbEntry.name)
+		vizEntry.stroke.Color = color
+		vizEntry.fill.BackgroundColor3 = color
+		vizEntry.barFill.BackgroundColor3 = color
+		vizEntry.label.Text = string.format(
+			"%s · %s",
+			tostring(dbEntry.name or "?"),
+			tostring(dbEntry.kind or "?")
+		)
+
+		if flag("Gakuran Viz Highlight", true) then
+			local character = getCharacter(attacker)
+			if character then
+				if not vizEntry.highlight or not vizEntry.highlight.Parent then
+					local hl = Instance.new("Highlight")
+					hl.Name = "XanhubCombatVizHL"
+					hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					hl.FillTransparency = 0.75
+					hl.OutlineTransparency = 0.2
+					hl.Parent = character
+					vizEntry.highlight = hl
+				end
+				vizEntry.highlight.Adornee = character
+				vizEntry.highlight.FillColor = color
+				vizEntry.highlight.OutlineColor = color
+				vizEntry.highlight.Enabled = true
+			end
+		elseif vizEntry.highlight then
+			vizEntry.highlight.Enabled = false
+		end
+	end
+
+	local function updateVisualizers()
+		if not flag("Gakuran Combat Visualizer", false) then
+			for userId in pairs(st.vizEntries) do
+				destroyViz(userId)
+			end
+			return
+		end
+
+		local cam = Workspace.CurrentCamera or Camera
+		if not cam then
+			return
+		end
+		local myRoot = getLocalRoot()
+		local vizRange = numFlag("Gakuran Viz Range", 28)
+		local maxFillAlpha = 1 - (numFlag("Gakuran Viz Opacity", 45) / 100)
+		local now = os.clock()
+
+		for userId, vizEntry in pairs(st.vizEntries) do
+			local attacker = vizEntry.attacker
+			local dbEntry = vizEntry.entry
+			local track = vizEntry.track
+			local character = attacker and getCharacter(attacker)
+			local root = getRoot(character)
+
+			local alive = attacker
+				and attacker.Parent
+				and character
+				and root
+				and dbEntry
+				and now < (vizEntry.expires or 0)
+
+			if alive and myRoot then
+				local dist = (root.Position - myRoot.Position).Magnitude
+				if dist > vizRange + 4 then
+					alive = false
+				end
+			end
+
+			-- Track still playing?
+			if alive and track then
+				local playing = false
+				pcall(function()
+					playing = track.IsPlaying == true
+				end)
+				if not playing and now > (vizEntry.expires - 0.2) then
+					-- keep brief linger after track ends
+				elseif not playing then
+					-- allow short trail after hit
+				end
+			end
+
+			if not alive then
+				destroyViz(userId)
+			else
+				local hitDelay = math.max(0.08, tonumber(dbEntry.hitDelay) or 0.32)
+				local elapsed = 0
+				if track then
+					pcall(function()
+						elapsed = tonumber(track.TimePosition) or 0
+					end)
+				end
+				local progress = math.clamp(elapsed / hitDelay, 0, 1)
+				-- If track already past hit, show full charge briefly.
+				if elapsed >= hitDelay then
+					progress = 1
+				end
+
+				local head = character:FindFirstChild("Head")
+					or character:FindFirstChild("Torso")
+					or root
+				local top = (head and head.Position or root.Position) + Vector3.new(0, 0.9, 0)
+				local bottom = root.Position - Vector3.new(0, 3, 0)
+				local mid = (top + bottom) * 0.5
+
+				local spMid, onScreen = cam:WorldToViewportPoint(mid)
+				local spTop = cam:WorldToViewportPoint(top)
+				local spBot = cam:WorldToViewportPoint(bottom)
+				if not onScreen or spMid.Z <= 0 then
+					vizEntry.root.Visible = false
+					if vizEntry.highlight then
+						vizEntry.highlight.Enabled = false
+					end
+				else
+					local height = math.abs(spTop.Y - spBot.Y)
+					height = math.clamp(height, 48, 280)
+					local width = height * 0.55
+					local x = spMid.X - width * 0.5
+					local y = math.min(spTop.Y, spBot.Y)
+
+					vizEntry.root.Visible = true
+					vizEntry.box.Position = UDim2.fromOffset(x, y)
+					vizEntry.box.Size = UDim2.fromOffset(width, height)
+					vizEntry.box.Visible = true
+
+					local fillAlpha = 0.92 - progress * (0.92 - maxFillAlpha)
+					vizEntry.fill.BackgroundTransparency = fillAlpha
+					vizEntry.fill.Size = UDim2.new(1, 0, progress, 0)
+
+					vizEntry.barBg.Position = UDim2.fromOffset(x, y + height + 3)
+					vizEntry.barBg.Size = UDim2.fromOffset(width, 5)
+					vizEntry.barBg.Visible = true
+					vizEntry.barFill.Size = UDim2.new(progress, 0, 1, 0)
+
+					vizEntry.label.Position = UDim2.fromOffset(x - 20, y - 16)
+					vizEntry.label.Size = UDim2.fromOffset(width + 40, 14)
+					vizEntry.label.Text = string.format(
+						"%s %d%%",
+						tostring(dbEntry.name or dbEntry.kind or "?"),
+						math.floor(progress * 100 + 0.5)
+					)
+					vizEntry.label.Visible = true
+
+					if vizEntry.highlight and flag("Gakuran Viz Highlight", true) then
+						vizEntry.highlight.Enabled = true
+						-- Highlight intensifies with charge (more opaque fill).
+						vizEntry.highlight.FillTransparency = 0.88 - progress * 0.35
+						vizEntry.highlight.OutlineTransparency = 0.35 - progress * 0.25
+					end
+				end
+			end
 		end
 	end
 
@@ -521,13 +993,18 @@ return function(ctx)
 		-- One pending response per attacker+anim (prevents double-fire spam).
 		local dedupe = tostring(attacker.UserId) .. ":" .. tostring(animId)
 		if st.pending[dedupe] then
+			-- Still refresh visualizer for this attack.
+			startVisualizer(attacker, track, dbEntry)
 			return
 		end
 		st.pending[dedupe] = true
 
+		startVisualizer(attacker, track, dbEntry)
+
 		local hitDelay = tonumber(dbEntry.hitDelay) or 0.32
 		local window = tonumber(dbEntry.window) or 0.125
 		local range = numFlag("Gakuran Range Prefilter", 14)
+		local m2Attack = isM2Entry(dbEntry)
 
 		local profile = profileOverride(animId, dbEntry.name)
 		if profile then
@@ -552,21 +1029,28 @@ return function(ctx)
 		end
 		local reaction = numFlag("Gakuran Reaction Offset", 40) / 1000
 		local pingComp, pingMs = pingCompensationSeconds()
-		-- Block slightly before predicted hitbox for the perfect window.
-		-- Ping compensation starts earlier so the server sees Blocking in time.
-		local target = hitDelay - reaction - (window * 0.35) - pingComp
-		local waitTime = math.max(0, target - elapsed)
+
+		-- M2 dodge fires earlier (escape before hitbox); parry aims for perfect window.
+		local waitTime
+		if m2Attack and flag("Gakuran Dodge M2", false) then
+			local early = numFlag("Gakuran M2 Dodge Early", 90) / 1000
+			waitTime = math.max(0, hitDelay - early - pingComp - elapsed)
+		else
+			local target = hitDelay - reaction - (window * 0.35) - pingComp
+			waitTime = math.max(0, target - elapsed)
+		end
 
 		if flag("Gakuran Combat Debug Logs", false) then
 			combatToast("debug", "Attack Seen", string.format(
-				"%s · %s from %s\nbase %.0fms · wait %.0fms · ping %.0fms%s",
+				"%s · %s from %s\nbase %.0fms · wait %.0fms · ping %.0fms%s%s",
 				tostring(dbEntry.name or "?"),
 				tostring(dbEntry.kind or "?"),
 				tostring(attacker.Name),
 				hitDelay * 1000,
 				waitTime * 1000,
 				pingMs,
-				pingComp > 0 and string.format(" (−%.0fms)", pingComp * 1000) or ""
+				pingComp > 0 and string.format(" (−%.0fms)", pingComp * 1000) or "",
+				m2Attack and flag("Gakuran Dodge M2", false) and " · m2-dodge" or ""
 			), "combat-seen-" .. tostring(animId))
 		end
 
@@ -578,13 +1062,14 @@ return function(ctx)
 
 			local autoParry = flag("Gakuran Auto Parry", false)
 			local autoDodge = flag("Gakuran Auto Dodge", false)
-			if not autoParry and not autoDodge then
+			local dodgeM2 = flag("Gakuran Dodge M2", false)
+			if not autoParry and not autoDodge and not dodgeM2 then
 				return
 			end
 
 			-- Soft global cooldown so we don't hammer Block/Evasive.
 			local now = os.clock()
-			if autoParry and (now - (st.lastParryAt or 0)) < 0.12 then
+			if autoParry and (now - (st.lastParryAt or 0)) < 0.12 and not (dodgeM2 and m2Attack) then
 				return
 			end
 
@@ -596,7 +1081,9 @@ return function(ctx)
 			end
 
 			local dist = (theirRoot.Position - myRoot.Position).Magnitude
-			local maxRange = math.max(range, numFlag("Gakuran Dodge Range", 12))
+			local m2Range = numFlag("Gakuran M2 Dodge Range", 14)
+			local dodgeRange = numFlag("Gakuran Dodge Range", 12)
+			local maxRange = math.max(range, dodgeRange, dodgeM2 and m2Range or 0)
 			if dist > maxRange + 2 then
 				debugLog("out of range", dist)
 				return
@@ -604,17 +1091,25 @@ return function(ctx)
 
 			local rearAngle = numFlag("Gakuran Dodge Rear Angle", 115)
 			local behind = isBehind(myRoot, theirRoot, rearAngle)
-			local dodgeRange = numFlag("Gakuran Dodge Range", 12)
 
 			local entryMeta = {
 				name = dbEntry.name,
 				kind = dbEntry.kind,
 				hitDelay = dbEntry.hitDelay,
 				_attackerName = attacker.DisplayName or attacker.Name,
+				attackerName = attacker.DisplayName or attacker.Name,
 				_waitMs = waitTime * 1000,
 				_pingMs = pingMs,
 				_pingComp = pingComp > 0,
 			}
+
+			-- Priority 1: Dodge M2 with forced back dash (uses game DashBack when MoveDir ~ 0/back).
+			if dodgeM2 and m2Attack and dist <= m2Range + 1 then
+				if (now - (st.lastDodgeAt or 0)) >= 0.18 then
+					doDodge("m2-back", entryMeta, { forceBack = true })
+				end
+				return
+			end
 
 			if autoDodge and behind and dist <= dodgeRange then
 				if (now - (st.lastDodgeAt or 0)) >= 0.18 then
@@ -722,7 +1217,7 @@ return function(ctx)
 		if ctx.state.unloading then
 			return
 		end
-		if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
+		if not combatFeaturesOn() then
 			return
 		end
 		if attacker == LocalPlayer then
@@ -810,7 +1305,12 @@ return function(ctx)
 		end
 
 		local dist = (theirRoot.Position - myRoot.Position).Magnitude
-		local range = math.max(numFlag("Gakuran Range Prefilter", 14), numFlag("Gakuran Dodge Range", 12))
+		local range = math.max(
+			numFlag("Gakuran Range Prefilter", 14),
+			numFlag("Gakuran Dodge Range", 12),
+			numFlag("Gakuran M2 Dodge Range", 14),
+			flag("Gakuran Combat Visualizer", false) and numFlag("Gakuran Viz Range", 28) or 0
+		)
 		if dist > range + 4 then
 			return
 		end
@@ -917,14 +1417,19 @@ return function(ctx)
 	end
 
 	local function scanNearbyAttacks()
-		if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
+		if not combatFeaturesOn() then
 			return
 		end
 		local myRoot = getLocalRoot()
 		if not myRoot then
 			return
 		end
-		local range = math.max(numFlag("Gakuran Range Prefilter", 14), numFlag("Gakuran Dodge Range", 12)) + 6
+		local range = math.max(
+			numFlag("Gakuran Range Prefilter", 14),
+			numFlag("Gakuran Dodge Range", 12),
+			numFlag("Gakuran M2 Dodge Range", 14),
+			flag("Gakuran Combat Visualizer", false) and numFlag("Gakuran Viz Range", 28) or 0
+		) + 6
 
 		for _, player in ipairs(Players:GetPlayers()) do
 			if player ~= LocalPlayer then
@@ -1045,12 +1550,19 @@ return function(ctx)
 			dt = tonumber(dt) or 0
 
 			-- High-rate track scan (AnimationPlayed alone is unreliable for remote combat).
-			if flag("Gakuran Auto Parry", false) or flag("Gakuran Auto Dodge", false) then
+			if combatFeaturesOn() then
 				scanAccum = scanAccum + dt
 				if scanAccum >= 0.03 then
 					scanAccum = 0
 					pcall(scanNearbyAttacks)
 				end
+			end
+
+			-- Visualizer updates every frame for smooth charge fill.
+			if flag("Gakuran Combat Visualizer", false) then
+				pcall(updateVisualizers)
+			elseif next(st.vizEntries) then
+				pcall(updateVisualizers)
 			end
 
 			maintAccum = maintAccum + dt
@@ -1074,7 +1586,7 @@ return function(ctx)
 				end)
 			end
 
-			if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
+			if not combatFeaturesOn() then
 				return
 			end
 			local character = getCharacter(LocalPlayer) or LocalPlayer.Character
@@ -1095,6 +1607,15 @@ return function(ctx)
 			st.hooks[key] = nil
 		end
 		table.clear(st.pending)
+		for userId in pairs(st.vizEntries) do
+			destroyViz(userId)
+		end
+		pcall(function()
+			if st.vizFolder then
+				st.vizFolder:Destroy()
+			end
+		end)
+		st.vizFolder = nil
 	end)
 
 	return { setup = setup }
