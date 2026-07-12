@@ -47,15 +47,13 @@ return function(ctx)
     section:AddButton({
         text = "Open Animation Logger",
         callback = function()
-            local api = dev.apis.animationLogger
-            if api then api:Open() end
+            shared.invokeApi("animationLogger", "Open")
         end,
     })
     section:AddButton({
         text = "Clear Animation Log",
         callback = function()
-            local api = dev.apis.animationLogger
-            if api then api:Clear() end
+            shared.invokeApi("animationLogger", "Clear")
         end,
     })
     section:AddLabel("Captures Animator.AnimationPlayed without modifying tracks")

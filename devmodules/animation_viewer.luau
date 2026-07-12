@@ -14,10 +14,7 @@ return function(ctx)
     section:AddButton({
         text = "Open Animation Viewer",
         callback = function()
-            local api = dev.apis.animationViewer
-            if api then
-                api:Open()
-            end
+            shared.invokeApi("animationViewer", "Open")
         end,
     })
 

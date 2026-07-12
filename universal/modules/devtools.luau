@@ -163,6 +163,10 @@ return function(ctx)
 	end
 
 	local function setup()
+		local dev = ctx.devtools
+		if dev and dev.shared and library.base then
+			pcall(dev.shared.ensureOverlayGui)
+		end
 		local enabled = library.flags["Universal Dev Tools"] == true
 		setEnabled(enabled)
 	end

@@ -15,10 +15,10 @@ return function(ctx)
     section:AddToggle({text = "Include Errors", flag = "Dev Console Errors", state = true})
     section:AddSlider({text = "Maximum Entries", flag = "Dev Console Max Entries", min = 100, max = 3000, value = 800, float = 100})
     section:AddButton({text = "Open Console Logger", callback = function()
-        if dev.apis.consoleLogger then dev.apis.consoleLogger:Open() end
+        shared.invokeApi("consoleLogger", "Open")
     end})
     section:AddButton({text = "Clear Console Log", callback = function()
-        if dev.apis.consoleLogger then dev.apis.consoleLogger:Clear() end
+        shared.invokeApi("consoleLogger", "Clear")
     end})
 
     local state = {

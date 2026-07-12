@@ -3644,6 +3644,12 @@
 							column.main.Visible = false
 						end
 					end
+				elseif visible and self.currentTab == tab then
+					for _, column in ipairs(tab.columns) do
+						if column.main then
+							column.main.Visible = true
+						end
+					end
 				end
 
 				self:RefreshTabBar()

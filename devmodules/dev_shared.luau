@@ -129,6 +129,54 @@ return function(ctx)
         return game:GetService("CoreGui")
     end
 
+    function shared.ensureOverlayGui()
+        if dev.overlayGui and dev.overlayGui.Parent then
+            return dev.overlayGui
+        end
+
+        local anchorParent
+        if ctx.library and ctx.library.base then
+            anchorParent = ctx.library.base.Parent or shared.getGuiParent()
+        else
+            anchorParent = shared.getGuiParent()
+        end
+
+        local overlay = Instance.new("ScreenGui")
+        overlay.Name = "xanhub_dev_overlay"
+        overlay.ResetOnSpawn = false
+        overlay.IgnoreGuiInset = true
+        overlay.ZIndexBehavior = Enum.ZIndexBehavior.Global
+        overlay.DisplayOrder = 1000001
+        overlay.Enabled = true
+        overlay.Parent = anchorParent
+
+        dev.overlayGui = overlay
+        shared.addCleanup(function()
+            shared.safeDestroy(overlay)
+            dev.overlayGui = nil
+        end)
+        return overlay
+    end
+
+    function shared.invokeApi(key, method, ...)
+        local api = dev.apis[key]
+        if not api then
+            shared.notify("Dev tool not loaded: " .. tostring(key), 4)
+            return false
+        end
+        local fn = api[method]
+        if type(fn) ~= "function" then
+            shared.notify("Dev tool missing method: " .. tostring(method), 4)
+            return false
+        end
+        local ok, err = pcall(fn, api, ...)
+        if not ok then
+            warn("[xanhub dev] " .. tostring(key) .. ":" .. tostring(method) .. " failed: " .. tostring(err))
+            shared.notify("Dev tool error: " .. tostring(err), 4)
+        end
+        return ok, err
+    end
+
     function shared.getExecutorName()
         if type(identifyexecutor) == "function" then
             local ok, name = pcall(identifyexecutor)
@@ -335,7 +383,7 @@ return function(ctx)
             return existing
         end
 
-        local parent = shared.getGuiParent()
+        local parent = shared.ensureOverlayGui()
         local root = shared.create("Frame", {
             Name = "xanhub_dev_" .. string.gsub(string.lower(title), "%W+", "_"),
             AnchorPoint = Vector2.new(0.5, 0.5),
@@ -345,7 +393,7 @@ return function(ctx)
             BorderSizePixel = 0,
             Visible = false,
             Active = true,
-            ZIndex = 900,
+            ZIndex = 20,
             Parent = parent,
         })
         shared.round(root, 10)
@@ -470,6 +518,7 @@ return function(ctx)
             scale = scale,
         }
         function window:Show()
+            shared.ensureOverlayGui().Enabled = true
             root.Visible = true
         end
         function window:Hide()

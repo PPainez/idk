@@ -11,24 +11,26 @@ return function(ctx)
     local section = dev.left:AddSection("Instance Inspector")
 
     section:AddButton({text = "Open Instance Inspector", callback = function()
-        if dev.apis.instanceInspector then dev.apis.instanceInspector:Open() end
+        shared.invokeApi("instanceInspector", "Open")
     end})
     section:AddButton({text = "Inspect Local Character", callback = function()
-        if dev.apis.instanceInspector and ctx.LocalPlayer.Character then
-            dev.apis.instanceInspector:Select(ctx.LocalPlayer.Character)
-            dev.apis.instanceInspector:Open()
+        if ctx.LocalPlayer.Character then
+            shared.invokeApi("instanceInspector", "Select", ctx.LocalPlayer.Character)
+            shared.invokeApi("instanceInspector", "Open")
+        else
+            shared.notify("No local character", 2)
         end
     end})
     section:AddButton({text = "Inspect Current Camera", callback = function()
-        if dev.apis.instanceInspector and ctx.Workspace.CurrentCamera then
-            dev.apis.instanceInspector:Select(ctx.Workspace.CurrentCamera)
-            dev.apis.instanceInspector:Open()
+        if ctx.Workspace.CurrentCamera then
+            shared.invokeApi("instanceInspector", "Select", ctx.Workspace.CurrentCamera)
+            shared.invokeApi("instanceInspector", "Open")
         end
     end})
     section:AddButton({text = "Inspect Mouse Target", callback = function()
         local target = ctx.UserInputService and ctx.UserInputService:GetMouseLocation()
         local camera = ctx.Workspace.CurrentCamera
-        if dev.apis.instanceInspector and camera and target then
+        if camera and target then
             local ray = camera:ViewportPointToRay(target.X, target.Y)
             local params = RaycastParams.new()
             params.FilterType = Enum.RaycastFilterType.Exclude
@@ -37,18 +39,16 @@ return function(ctx)
             end
             local hit = ctx.Workspace:Raycast(ray.Origin, ray.Direction * 2048, params)
             if hit and hit.Instance then
-                dev.apis.instanceInspector:Select(hit.Instance)
-                dev.apis.instanceInspector:Open()
+                shared.invokeApi("instanceInspector", "Select", hit.Instance)
+                shared.invokeApi("instanceInspector", "Open")
             else
                 shared.notify("No instance under cursor", 2)
             end
         end
     end})
     section:AddButton({text = "Inspect ReplicatedStorage", callback = function()
-        if dev.apis.instanceInspector then
-            dev.apis.instanceInspector:Select(game:GetService("ReplicatedStorage"))
-            dev.apis.instanceInspector:Open()
-        end
+        shared.invokeApi("instanceInspector", "Select", game:GetService("ReplicatedStorage"))
+        shared.invokeApi("instanceInspector", "Open")
     end})
     section:AddToggle({text = "Auto Refresh", flag = "Dev Inspector Auto Refresh", state = true})
     section:AddSlider({text = "Refresh Rate", flag = "Dev Inspector Refresh", min = 0.1, max = 2, value = 0.5, float = 0.1, suffix = "s"})

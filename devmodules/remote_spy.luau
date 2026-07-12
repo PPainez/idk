@@ -39,15 +39,13 @@ return function(ctx)
     section:AddButton({
         text = "Open Remote Spy",
         callback = function()
-            local api = dev.apis.remoteSpy
-            if api then api:Open() end
+            shared.invokeApi("remoteSpy", "Open")
         end,
     })
     section:AddButton({
         text = "Clear Remote Log",
         callback = function()
-            local api = dev.apis.remoteSpy
-            if api then api:Clear() end
+            shared.invokeApi("remoteSpy", "Clear")
         end,
     })
     section:AddLabel("Inbound events + outbound calls made through dev.apis.remoteSpy")

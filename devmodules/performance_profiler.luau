@@ -14,10 +14,10 @@ return function(ctx)
     section:AddSlider({text = "Spike Threshold", flag = "Dev Profiler Spike Ms", min = 10, max = 100, value = 33, float = 1, suffix = " ms"})
     section:AddSlider({text = "History Samples", flag = "Dev Profiler History", min = 30, max = 240, value = 120, float = 10})
     section:AddButton({text = "Open Performance Profiler", callback = function()
-        if dev.apis.performanceProfiler then dev.apis.performanceProfiler:Open() end
+        shared.invokeApi("performanceProfiler", "Open")
     end})
     section:AddButton({text = "Copy Performance Snapshot", callback = function()
-        if dev.apis.performanceProfiler then dev.apis.performanceProfiler:CopySnapshot() end
+        shared.invokeApi("performanceProfiler", "CopySnapshot")
     end})
 
     local state = {
