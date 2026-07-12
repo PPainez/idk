@@ -2,7 +2,7 @@
     xanhub | Universal
 
     Runs through main/loader.luau or standalone.
-    General client-side movement, visual, ESP, and utility tools.
+    General client-side movement, targeting, visual, ESP, and utility tools.
     No anti-cheat bypass, remote abuse, or game-specific hooks are included.
 ]]
 
@@ -185,18 +185,21 @@ end
 -- UI -------------------------------------------------------------------------
 
 local homeTab = library:AddTab("Home", 1)
-local playerTab = library:AddTab("Player", 2)
+local combatTab = library:AddTab("Combat", 2)
 local visualsTab = library:AddTab("Visuals", 3)
-local worldTab = library:AddTab("World", 4)
-local utilityTab = library:AddTab("Utility", 5)
-local bindsTab = library:AddTab("Keybinds", 6)
+local playerTab = library:AddTab("Player", 4)
+local worldTab = library:AddTab("World", 5)
+local utilityTab = library:AddTab("Utility", 6)
+local bindsTab = library:AddTab("Keybinds", 7)
 
 local homeLeft = homeTab:AddColumn()
 local homeRight = homeTab:AddColumn()
-local playerLeft = playerTab:AddColumn()
-local playerRight = playerTab:AddColumn()
+local combatLeft = combatTab:AddColumn()
+local combatRight = combatTab:AddColumn()
 local visualsLeft = visualsTab:AddColumn()
 local visualsRight = visualsTab:AddColumn()
+local playerLeft = playerTab:AddColumn()
+local playerRight = playerTab:AddColumn()
 local worldLeft = worldTab:AddColumn()
 local worldRight = worldTab:AddColumn()
 local utilityLeft = utilityTab:AddColumn()
@@ -698,9 +701,25 @@ local function setupESPRuntime()
         accent.BorderSizePixel = 0
         accent.Parent = card
 
+        local targetMarker = Instance.new("Frame")
+        targetMarker.Position = UDim2.fromOffset(8, 8)
+        targetMarker.Size = UDim2.fromOffset(6, 6)
+        targetMarker.BackgroundColor3 = Color3.fromRGB(255, 82, 96)
+        targetMarker.BackgroundTransparency = 1
+        targetMarker.BorderSizePixel = 0
+        targetMarker.Visible = false
+        targetMarker.Parent = card
+        createRounded(targetMarker, 999)
+
+        local targetMarkerStroke = Instance.new("UIStroke")
+        targetMarkerStroke.Color = Color3.fromRGB(255, 255, 255)
+        targetMarkerStroke.Transparency = 0.35
+        targetMarkerStroke.Thickness = 1
+        targetMarkerStroke.Parent = targetMarker
+
         local nameLabel = Instance.new("TextLabel")
-        nameLabel.Position = UDim2.fromOffset(8, 3)
-        nameLabel.Size = UDim2.new(1, -52, 0, 15)
+        nameLabel.Position = UDim2.fromOffset(18, 3)
+        nameLabel.Size = UDim2.new(1, -62, 0, 15)
         nameLabel.BackgroundTransparency = 1
         nameLabel.Text = player.DisplayName
         nameLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
@@ -746,6 +765,8 @@ local function setupESPRuntime()
             card = card,
             stroke = stroke,
             accent = accent,
+            targetMarker = targetMarker,
+            targetMarkerStroke = targetMarkerStroke,
             name = nameLabel,
             distance = distanceLabel,
             healthBackground = barBackground,
@@ -758,12 +779,17 @@ local function setupESPRuntime()
         return entry
     end
 
-    local function setVisible(entry, visible)
+    local function setVisible(entry, visible, allowHighlight)
         if entry.highlight then
-            entry.highlight.Enabled = visible and library.flags["Universal ESP Highlights"] == true
+            entry.highlight.Enabled = visible
+                and allowHighlight == true
+                and library.flags["Universal ESP Highlights"] == true
         end
         if entry.billboard then
             entry.billboard.Enabled = visible
+        end
+        if not visible and entry.targetMarker then
+            entry.targetMarker.Visible = false
         end
     end
 
@@ -806,39 +832,78 @@ local function setupESPRuntime()
                 end
 
                 if entry then
-                    local sameTeam = library.flags["Universal ESP Team Check"] == true
+                    local distance = localRoot and (localRoot.Position - root.Position).Magnitude or math.huge
+                    local targetingEnabled = library.flags["Universal Aim Preview"] == true
+                    local isTarget = targetingEnabled and state.aimTarget == player
+                    local targetSync = library.flags["Universal Targeting Sync ESP"] ~= false
+
+                    local espSameTeam = library.flags["Universal ESP Team Check"] == true
                         and LocalPlayer.Team ~= nil
                         and player.Team == LocalPlayer.Team
-                    local distance = localRoot and (localRoot.Position - root.Position).Magnitude or math.huge
-                    local visible = enabled and not sameTeam and distance <= maxDistance
-                    setVisible(entry, visible)
+                    local targetingTeamCheck
+                    if targetSync then
+                        targetingTeamCheck = library.flags["Universal ESP Team Check"] == true
+                    else
+                        targetingTeamCheck = library.flags["Universal Aim Team Check"] == true
+                    end
+                    local targetSameTeam = targetingTeamCheck
+                        and LocalPlayer.Team ~= nil
+                        and player.Team == LocalPlayer.Team
+
+                    local targetMaxDistance = targetSync
+                        and maxDistance
+                        or math.max(50, tonumber(library.flags["Universal Aim Max Distance"]) or 500)
+                    local visibleForESP = enabled and not espSameTeam and distance <= maxDistance
+                    local visibleForTarget = isTarget and not targetSameTeam and distance <= targetMaxDistance
+                    local visible = visibleForESP or visibleForTarget
+                    setVisible(entry, visible, visibleForESP)
 
                     if visible then
-                        local fade = math.clamp((distance - fadeStart) / math.max(1, maxDistance - fadeStart), 0, 1)
-                        local opacity = 1 - (fade * 0.72)
-                        local distanceScale = math.clamp(1 - (distance / maxDistance) * 0.64, 0.34, 1)
-                        local wantedScale = baseScale * distanceScale
+                        local displayMaxDistance = visibleForTarget and targetMaxDistance or maxDistance
+                        local displayFadeStart = math.min(fadeStart, displayMaxDistance - 1)
+                        local fade = math.clamp(
+                            (distance - displayFadeStart) / math.max(1, displayMaxDistance - displayFadeStart),
+                            0,
+                            1
+                        )
+                        local opacity = 1 - (fade * (isTarget and 0.42 or 0.72))
+                        local distanceScale = math.clamp(1 - (distance / displayMaxDistance) * 0.64, 0.34, 1)
+                        local wantedScale = baseScale * distanceScale * (isTarget and 1.08 or 1)
                         entry.currentScale += (wantedScale - entry.currentScale) * 0.24
                         entry.scale.Scale = entry.currentScale
-                        entry.billboard.MaxDistance = maxDistance
+                        entry.billboard.MaxDistance = displayMaxDistance
 
-                        entry.highlight.FillColor = color
-                        entry.highlight.OutlineColor = color
+                        local configuredTargetColor = typeof(library.flags["Universal Aim Color"]) == "Color3"
+                            and library.flags["Universal Aim Color"]
+                            or Color3.fromRGB(255, 82, 96)
+                        local targetColor = targetSync and color or configuredTargetColor
+                        local displayColor = isTarget and targetColor or color
+
+                        entry.highlight.FillColor = displayColor
+                        entry.highlight.OutlineColor = displayColor
                         entry.highlight.FillTransparency = 0.92 + fade * 0.06
                         entry.highlight.OutlineTransparency = 0.28 + fade * 0.55
 
-                        entry.stroke.Color = color
-                        entry.stroke.Transparency = 0.28 + fade * 0.52
-                        entry.accent.BackgroundColor3 = color
-                        entry.accent.BackgroundTransparency = 1 - opacity
-                        entry.card.BackgroundTransparency = 0.18 + fade * 0.58
-                        entry.name.TextTransparency = 1 - opacity
+                        entry.stroke.Color = displayColor
+                        entry.stroke.Thickness = isTarget and 2 or 1
+                        entry.stroke.Transparency = isTarget and 0.08 or (0.28 + fade * 0.52)
+                        entry.accent.BackgroundColor3 = displayColor
+                        entry.accent.Size = UDim2.new(0, isTarget and 4 or 2, 1, 0)
+                        entry.accent.BackgroundTransparency = isTarget and 0 or (1 - opacity)
+                        entry.card.BackgroundTransparency = isTarget and 0.06 or (0.18 + fade * 0.58)
+                        entry.name.TextTransparency = isTarget and 0 or (1 - opacity)
+                        entry.name.TextColor3 = isTarget and targetColor or Color3.fromRGB(245, 247, 255)
                         entry.distance.TextTransparency = 1 - opacity
                         entry.healthBackground.BackgroundTransparency = 0.08 + fade * 0.66
                         entry.health.BackgroundTransparency = 1 - opacity
 
+                        entry.targetMarker.Visible = isTarget
+                        entry.targetMarker.BackgroundColor3 = targetColor
+                        entry.targetMarker.BackgroundTransparency = isTarget
+                            and (0.08 + math.abs(math.sin(os.clock() * 5)) * 0.28)
+                            or 1
                         entry.name.Text = player.DisplayName
-                        entry.name.Visible = library.flags["Universal ESP Names"] == true
+                        entry.name.Visible = isTarget or library.flags["Universal ESP Names"] == true
                         entry.distance.Visible = library.flags["Universal ESP Distance"] == true
                         entry.healthBackground.Visible = library.flags["Universal ESP Health"] == true
                         entry.distance.Text = tostring(math.floor(distance + 0.5)) .. "m"
@@ -868,7 +933,7 @@ local function setupESPRuntime()
         control.callback = function(enabled)
             if not enabled then
                 for _, entry in pairs(state.esp) do
-                    setVisible(entry, false)
+                    setVisible(entry, false, false)
                 end
             end
         end
@@ -904,28 +969,31 @@ localVisuals:AddSlider({text = "Crosshair Gap", flag = "Universal Crosshair Gap"
 localVisuals:AddColor({text = "Crosshair Color", flag = "Universal Crosshair Color", color = Color3.fromRGB(0, 170, 255)})
 localVisuals:AddToggle({text = "Coordinates", flag = "Universal Coordinates", state = false})
 
-local aimPreview = visualsRight:AddSection("Target Preview")
-aimPreview:AddToggle({text = "Enabled", flag = "Universal Aim Preview", state = false})
-aimPreview:AddToggle({text = "Lock Preview Target", flag = "Universal Aim Lock Preview", state = false})
-aimPreview:AddToggle({text = "Show FOV Circle", flag = "Universal Aim Show FOV", state = true})
-aimPreview:AddToggle({text = "Show Target Line", flag = "Universal Aim Show Line", state = true})
-aimPreview:AddToggle({text = "Team Check", flag = "Universal Aim Team Check", state = true})
-aimPreview:AddList({
+local targetingSection = combatLeft:AddSection("Targeting")
+targetingSection:AddToggle({text = "Enabled", flag = "Universal Aim Preview", state = false})
+targetingSection:AddToggle({
+    text = "Sync With ESP",
+    flag = "Universal Targeting Sync ESP",
+    state = true,
+})
+targetingSection:AddToggle({text = "Show FOV Circle", flag = "Universal Aim Show FOV", state = true})
+targetingSection:AddToggle({text = "Team Check", flag = "Universal Aim Team Check", state = true})
+targetingSection:AddList({
     text = "Target Part",
     flag = "Universal Aim Part",
     values = {"Head", "Torso"},
     value = "Head",
 })
-aimPreview:AddSlider({
-    text = "FOV Radius",
+targetingSection:AddSlider({
+    text = "Targeting Radius",
     flag = "Universal Aim FOV",
-    min = 40,
+    min = 35,
     max = 400,
     value = 140,
     float = 5,
     suffix = " px",
 })
-aimPreview:AddSlider({
+targetingSection:AddSlider({
     text = "Maximum Distance",
     flag = "Universal Aim Max Distance",
     min = 50,
@@ -934,12 +1002,27 @@ aimPreview:AddSlider({
     float = 10,
     suffix = " studs",
 })
-aimPreview:AddColor({
-    text = "Indicator Color",
-    flag = "Universal Aim Color",
-    color = Color3.fromRGB(0, 170, 255),
+targetingSection:AddLabel("Sync With ESP uses its team, range, and color settings")
+
+local targetingLockSection = combatRight:AddSection("Lock Settings")
+targetingLockSection:AddToggle({
+    text = "Lock Current Target",
+    flag = "Universal Aim Lock Preview",
+    state = false,
 })
-aimPreview:AddLabel("Visual target preview only; it never moves your camera or input")
+targetingLockSection:AddToggle({
+    text = "Auto Switch When Lost",
+    flag = "Universal Aim Auto Switch",
+    state = true,
+})
+targetingLockSection:AddToggle({text = "Show Target Line", flag = "Universal Aim Show Line", state = true})
+targetingLockSection:AddColor({
+    text = "Target Color",
+    flag = "Universal Aim Color",
+    color = Color3.fromRGB(255, 82, 96),
+})
+local targetingStatus = targetingLockSection:AddLabel("Target: none")
+targetingLockSection:AddLabel("Targeting only selects and marks an ESP target")
 
 local function setupOverlayRuntime()
     local renderConnection
@@ -979,7 +1062,8 @@ local function setupOverlayRuntime()
 
     local fovCircle = Instance.new("Frame")
     fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-    fovCircle.BackgroundTransparency = 1
+    fovCircle.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+    fovCircle.BackgroundTransparency = 0.985
     fovCircle.BorderSizePixel = 0
     fovCircle.Visible = false
     fovCircle.ZIndex = 505
@@ -988,52 +1072,14 @@ local function setupOverlayRuntime()
 
     local fovStroke = Instance.new("UIStroke")
     fovStroke.Thickness = 1
-    fovStroke.Transparency = 0.34
+    fovStroke.Transparency = 0.56
     fovStroke.Color = Color3.fromRGB(0, 170, 255)
     fovStroke.Parent = fovCircle
 
-    local targetDot = Instance.new("Frame")
-    targetDot.AnchorPoint = Vector2.new(0.5, 0.5)
-    targetDot.Size = UDim2.fromOffset(10, 10)
-    targetDot.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
-    targetDot.BorderSizePixel = 0
-    targetDot.Visible = false
-    targetDot.ZIndex = 515
-    targetDot.Parent = root
-    createRounded(targetDot, 999)
-
-    local targetDotStroke = Instance.new("UIStroke")
-    targetDotStroke.Color = Color3.fromRGB(6, 8, 12)
-    targetDotStroke.Thickness = 2
-    targetDotStroke.Transparency = 0.1
-    targetDotStroke.Parent = targetDot
-
-    local targetLabel = Instance.new("TextLabel")
-    targetLabel.AnchorPoint = Vector2.new(0.5, 1)
-    targetLabel.Size = UDim2.fromOffset(170, 22)
-    targetLabel.BackgroundColor3 = Color3.fromRGB(8, 11, 17)
-    targetLabel.BackgroundTransparency = 0.18
-    targetLabel.BorderSizePixel = 0
-    targetLabel.Text = ""
-    targetLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
-    targetLabel.TextSize = 11
-    targetLabel.Font = Enum.Font.Code
-    targetLabel.TextTruncate = Enum.TextTruncate.AtEnd
-    targetLabel.Visible = false
-    targetLabel.ZIndex = 515
-    targetLabel.Parent = root
-    createRounded(targetLabel, 6)
-
-    local targetLabelStroke = Instance.new("UIStroke")
-    targetLabelStroke.Thickness = 1
-    targetLabelStroke.Transparency = 0.35
-    targetLabelStroke.Color = Color3.fromRGB(0, 170, 255)
-    targetLabelStroke.Parent = targetLabel
-
     local targetLine = Instance.new("Frame")
     targetLine.AnchorPoint = Vector2.new(0.5, 0.5)
-    targetLine.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
-    targetLine.BackgroundTransparency = 0.35
+    targetLine.BackgroundColor3 = Color3.fromRGB(255, 82, 96)
+    targetLine.BackgroundTransparency = 0.56
     targetLine.BorderSizePixel = 0
     targetLine.Visible = false
     targetLine.ZIndex = 506
@@ -1042,6 +1088,10 @@ local function setupOverlayRuntime()
     local function setScreenLine(frame, from, to, thickness)
         local delta = to - from
         local length = delta.Magnitude
+        if length <= 0.001 then
+            frame.Visible = false
+            return
+        end
         local midpoint = from + delta / 2
         frame.Position = UDim2.fromOffset(midpoint.X, midpoint.Y)
         frame.Size = UDim2.fromOffset(length, thickness or 1)
@@ -1063,7 +1113,37 @@ local function setupOverlayRuntime()
             or character:FindFirstChild("HumanoidRootPart")
     end
 
-    local function targetValid(player, camera, localRoot, center, radius, maxDistance)
+    local function targetingSettings()
+        local syncESP = library.flags["Universal Targeting Sync ESP"] ~= false
+        local teamCheck
+        if syncESP then
+            teamCheck = library.flags["Universal ESP Team Check"] == true
+        else
+            teamCheck = library.flags["Universal Aim Team Check"] == true
+        end
+
+        local targetMaximum = math.max(
+            50,
+            tonumber(library.flags["Universal Aim Max Distance"]) or 500
+        )
+        if syncESP then
+            targetMaximum = math.min(
+                targetMaximum,
+                math.max(50, tonumber(library.flags["Universal ESP Max Distance"]) or 650)
+            )
+        end
+
+        local espColor = typeof(library.flags["Universal ESP Color"]) == "Color3"
+            and library.flags["Universal ESP Color"]
+            or Color3.fromRGB(0, 170, 255)
+        local configuredColor = typeof(library.flags["Universal Aim Color"]) == "Color3"
+            and library.flags["Universal Aim Color"]
+            or Color3.fromRGB(255, 82, 96)
+
+        return syncESP, teamCheck, targetMaximum, syncESP and espColor or configuredColor
+    end
+
+    local function targetValid(player, camera, localRoot, center, radius, maxDistance, teamCheck)
         if not player or player == LocalPlayer then
             return nil
         end
@@ -1077,9 +1157,7 @@ local function setupOverlayRuntime()
             return nil
         end
 
-        if library.flags["Universal Aim Team Check"] == true
-            and LocalPlayer.Team ~= nil
-            and player.Team == LocalPlayer.Team then
+        if teamCheck and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then
             return nil
         end
 
@@ -1108,10 +1186,18 @@ local function setupOverlayRuntime()
         }
     end
 
-    local function findNearestTarget(camera, localRoot, center, radius, maxDistance)
+    local function findNearestTarget(camera, localRoot, center, radius, maxDistance, teamCheck)
         local best
         for _, player in ipairs(Players:GetPlayers()) do
-            local candidate = targetValid(player, camera, localRoot, center, radius, maxDistance)
+            local candidate = targetValid(
+                player,
+                camera,
+                localRoot,
+                center,
+                radius,
+                maxDistance,
+                teamCheck
+            )
             if candidate and (not best or candidate.screenDistance < best.screenDistance) then
                 best = candidate
             end
@@ -1172,54 +1258,64 @@ local function setupOverlayRuntime()
             end
         end
 
-        local previewEnabled = library.flags["Universal Aim Preview"] == true
-        local radius = math.max(20, tonumber(library.flags["Universal Aim FOV"]) or 140)
-        local maxDistance = math.max(50, tonumber(library.flags["Universal Aim Max Distance"]) or 500)
-        local previewColor = typeof(library.flags["Universal Aim Color"]) == "Color3"
-            and library.flags["Universal Aim Color"]
-            or Color3.fromRGB(0, 170, 255)
+        local targetingEnabled = library.flags["Universal Aim Preview"] == true
+        local requestedRadius = math.max(20, tonumber(library.flags["Universal Aim FOV"]) or 140)
+        local radius = math.min(requestedRadius, math.min(viewport.X, viewport.Y) * 0.47)
+        local _, teamCheck, maxDistance, targetColor = targetingSettings()
 
         fovCircle.Position = UDim2.fromOffset(center.X, center.Y)
         fovCircle.Size = UDim2.fromOffset(radius * 2, radius * 2)
-        fovCircle.Visible = previewEnabled and library.flags["Universal Aim Show FOV"] == true
-        fovStroke.Color = previewColor
-        targetDot.BackgroundColor3 = previewColor
-        targetLine.BackgroundColor3 = previewColor
-        targetLabelStroke.Color = previewColor
+        fovCircle.Visible = targetingEnabled and library.flags["Universal Aim Show FOV"] == true
+        fovCircle.BackgroundColor3 = targetColor
+        fovStroke.Color = targetColor
+        targetLine.BackgroundColor3 = targetColor
 
-        if not previewEnabled then
+        if not targetingEnabled then
             state.aimTarget = nil
-            targetDot.Visible = false
-            targetLabel.Visible = false
             targetLine.Visible = false
+            targetingStatus.Text = "Target: none"
             return
         end
 
         local localRoot = getRoot()
         local locked = library.flags["Universal Aim Lock Preview"] == true
+        local autoSwitch = library.flags["Universal Aim Auto Switch"] ~= false
         local target
 
         if locked and state.aimTarget then
-            target = targetValid(state.aimTarget, camera, localRoot, center, radius, maxDistance)
+            target = targetValid(
+                state.aimTarget,
+                camera,
+                localRoot,
+                center,
+                radius,
+                maxDistance,
+                teamCheck
+            )
         end
 
-        if not target then
-            target = findNearestTarget(camera, localRoot, center, radius, maxDistance)
+        if not target and (not locked or autoSwitch) then
+            target = findNearestTarget(
+                camera,
+                localRoot,
+                center,
+                radius,
+                maxDistance,
+                teamCheck
+            )
             state.aimTarget = target and target.player or nil
-        elseif not locked then
+        elseif target and not locked then
             state.aimTarget = target.player
+        elseif not target and locked and not autoSwitch then
+            state.aimTarget = nil
         end
 
         if target then
-            targetDot.Position = UDim2.fromOffset(target.point.X, target.point.Y)
-            targetDot.Visible = true
-            targetLabel.Position = UDim2.fromOffset(target.point.X, target.point.Y - 10)
-            targetLabel.Text = string.format(
-                "%s  •  %dm",
+            targetingStatus.Text = string.format(
+                "Target: %s | %dm",
                 target.player.DisplayName,
                 math.floor(target.worldDistance + 0.5)
             )
-            targetLabel.Visible = true
 
             if library.flags["Universal Aim Show Line"] == true then
                 setScreenLine(targetLine, center, target.point, 1)
@@ -1228,8 +1324,7 @@ local function setupOverlayRuntime()
                 targetLine.Visible = false
             end
         else
-            targetDot.Visible = false
-            targetLabel.Visible = false
+            targetingStatus.Text = locked and "Target: lost" or "Target: none in radius"
             targetLine.Visible = false
         end
     end)
@@ -1237,8 +1332,6 @@ local function setupOverlayRuntime()
     state.overlays.coordinates = coordinates
     state.overlays.crosshair = crosshair
     state.overlays.fovCircle = fovCircle
-    state.overlays.targetDot = targetDot
-    state.overlays.targetLabel = targetLabel
     state.overlays.targetLine = targetLine
 
     library:AddCleanup(function()
@@ -1564,7 +1657,7 @@ visualBinds:AddBind({
     end,
 })
 visualBinds:AddBind({
-    text = "Toggle Target Preview",
+    text = "Toggle Targeting",
     flag = "Universal Bind Aim Preview",
     key = "V",
     mode = "toggle",
@@ -1574,7 +1667,7 @@ visualBinds:AddBind({
     end,
 })
 visualBinds:AddBind({
-    text = "Lock Preview Target",
+    text = "Lock Target",
     flag = "Universal Bind Aim Lock",
     key = "Q",
     mode = "toggle",
