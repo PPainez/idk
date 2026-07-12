@@ -1081,7 +1081,7 @@ return function(ctx)
 
 	-- Hold-M1 reuses AnimationTrack instances / rewinds TimePosition.
 	-- Key swings by anim + swing index so each punch in a held string can parry.
-	local function swingKey(attacker, track, animId)
+	local function swingKey(attacker, track, animId, forceSwing)
 		st.swingState = st.swingState or {}
 		local uid = attacker.UserId
 		local ps = st.swingState[uid]
@@ -1089,12 +1089,20 @@ return function(ctx)
 			ps = {
 				byTrack = setmetatable({}, { __mode = "k" }),
 				lastCombo = -1,
+				comboPulse = 0,
 			}
 			st.swingState[uid] = ps
 		end
 
-		local tpos = trackTime(track)
 		local combo = attackerCombo(attacker)
+
+		-- Attribute-only pulse (no track): unique per combo step edge.
+		if not track then
+			ps.comboPulse = (ps.comboPulse or 0) + 1
+			return string.format("%s:combo:%d:%d", tostring(uid), combo, forceSwing or ps.comboPulse)
+		end
+
+		local tpos = trackTime(track)
 		local ts = ps.byTrack[track]
 		if not ts then
 			ts = { swing = 0, lastTime = tpos, lastCombo = combo }
@@ -1102,14 +1110,12 @@ return function(ctx)
 		end
 
 		-- Track replayed (TimePosition went backwards) → new swing
-		if tpos + 0.1 < (ts.lastTime or 0) then
+		if tpos + 0.08 < (ts.lastTime or 0) then
 			ts.swing = (ts.swing or 0) + 1
 		end
 		-- Combo attribute advanced (hold M1 1→2→3→4)
-		if combo > 0 and combo ~= ts.lastCombo then
-			if combo ~= ps.lastCombo then
-				ts.swing = (ts.swing or 0) + 1
-			end
+		if combo > 0 and combo ~= ps.lastCombo then
+			ts.swing = (ts.swing or 0) + 1
 		end
 		ts.lastTime = tpos
 		ts.lastCombo = combo
@@ -1118,34 +1124,73 @@ return function(ctx)
 		return string.format("%s:%s:%d:%d", tostring(uid), tostring(animId), ts.swing or 0, combo)
 	end
 
-	local function scheduleResponse(attacker, track, dbEntry)
+	local function entryForComboStep(attacker, combo)
+		combo = math.clamp(tonumber(combo) or 1, 1, 4)
+		local names = { "1stM1", "2ndM1", "3rdM1", "4thM1" }
+		local want = names[combo]
+		local delays = { 0.30, 0.28, 0.28, 0.35 }
+		local db = st.db
+		if db and type(db.byId) == "table" then
+			-- Prefer any DB entry with matching punch name (style-agnostic ID match later via tracks).
+			for _, e in pairs(db.byId) do
+				if e and e.name == want and e.kind == "M1" then
+					return {
+						id = e.id,
+						name = e.name,
+						kind = "M1",
+						hitDelay = e.hitDelay or delays[combo],
+						window = e.window or 0.125,
+						_from = "combo-attr",
+					}
+				end
+			end
+		end
+		return {
+			id = "combo-" .. tostring(combo),
+			name = want,
+			kind = "M1",
+			hitDelay = delays[combo],
+			window = 0.125,
+			_from = "combo-attr",
+		}
+	end
+
+	local function scheduleResponse(attacker, track, dbEntry, opts)
+		opts = type(opts) == "table" and opts or {}
 		local animId = dbEntry.id
-		local dedupe = swingKey(attacker, track, animId)
+		local dedupe = swingKey(attacker, track, animId, opts.forceSwing)
 		if st.pending[dedupe] then
-			startVisualizer(attacker, track, dbEntry)
+			if track then
+				startVisualizer(attacker, track, dbEntry)
+			end
 			return
 		end
 		-- Short TTL handled set (replaces permanent track lock that broke hold combos)
 		st.handledSwings = st.handledSwings or {}
 		if st.handledSwings[dedupe] then
-			startVisualizer(attacker, track, dbEntry)
+			if track then
+				startVisualizer(attacker, track, dbEntry)
+			end
 			return
 		end
 		st.pending[dedupe] = true
 		st.handledSwings[dedupe] = true
-		task.delay(1.6, function()
+		task.delay(0.85, function()
 			if st.handledSwings then
 				st.handledSwings[dedupe] = nil
 			end
 		end)
 
-		startVisualizer(attacker, track, dbEntry)
+		if track then
+			startVisualizer(attacker, track, dbEntry)
+		end
 
 		-- Style-aware hitbox delay (slugger M1 ~0.2s, hakari ~0.45s, slugger M2 ~0.82s).
 		local hitDelay = styleHitDelay(attacker, dbEntry)
 		local window = tonumber(dbEntry.window) or 0.125
 		local range = numFlag("Gakuran Range Prefilter", 14)
 		local m2Attack = isM2Entry(dbEntry)
+		local hold = attackerHoldingM1(attacker) or opts.fromCombo == true
 
 		local profile = profileOverride(animId, dbEntry.name)
 		if profile then
@@ -1162,7 +1207,17 @@ return function(ctx)
 		end
 
 		-- Prefer remaining time from the live track when available.
+		-- Hold-M1 remotes often arrive LATE (TimePosition already 0.4–0.6s) — don't trust
+		-- large elapsed on hold; combo pulses use elapsed≈0.
 		local elapsed = trackTime(track)
+		if opts.fromCombo then
+			-- Attribute edge: assume slight network lag already, not full track age.
+			elapsed = opts.assumedElapsed or 0.05
+		elseif hold and elapsed > hitDelay * 0.45 then
+			-- Late-replicated mid-swing: block immediately rather than skip.
+			elapsed = hitDelay
+		end
+
 		local reaction = numFlag("Gakuran Reaction Offset", 40) / 1000
 		local pingComp, pingMs = pingCompensationSeconds()
 
@@ -1174,12 +1229,11 @@ return function(ctx)
 		else
 			local target = hitDelay - reaction - (window * 0.35) - pingComp
 			waitTime = target - elapsed
-			-- Late detect during hold string: still try if inside hitbox duration.
 			if waitTime < 0 then
-				if elapsed <= hitDelay + 0.14 then
+				-- Hold strings: always try a same-frame block if we still see the swing.
+				if hold or elapsed <= hitDelay + 0.22 then
 					waitTime = 0
 				else
-					-- Too late for this swing — free the key so a replay can re-arm.
 					st.pending[dedupe] = nil
 					st.handledSwings[dedupe] = nil
 					return
@@ -1188,19 +1242,19 @@ return function(ctx)
 		end
 
 		if flag("Gakuran Combat Debug Logs", false) then
-			local hold = attackerHoldingM1(attacker)
 			combatToast("debug", "Attack Seen", string.format(
-				"%s · %s from %s%s\nbase %.0fms · wait %.0fms · ping %.0fms%s%s",
+				"%s · %s from %s%s%s\nbase %.0fms · wait %.0fms · ping %.0fms%s%s",
 				tostring(dbEntry.name or "?"),
 				tostring(dbEntry.kind or "?"),
 				tostring(attacker.Name),
 				hold and " · HOLD" or "",
+				opts.fromCombo and " · COMBO" or "",
 				hitDelay * 1000,
 				waitTime * 1000,
 				pingMs,
 				pingComp > 0 and string.format(" (−%.0fms)", pingComp * 1000) or "",
 				m2Attack and flag("Gakuran Dodge M2", false) and " · m2-dodge" or ""
-			), "combat-seen-" .. tostring(animId))
+			), "combat-seen-" .. tostring(animId) .. "-" .. tostring(attackerCombo(attacker)))
 		end
 
 		task.delay(waitTime, function()
@@ -1218,7 +1272,7 @@ return function(ctx)
 
 			-- Soft cooldown — very low so held M1 strings (1st→4th) all parry.
 			local now = os.clock()
-			local holdCd = attackerHoldingM1(attacker) and 0.03 or 0.045
+			local holdCd = (attackerHoldingM1(attacker) or opts.fromCombo) and 0.025 or 0.045
 			if autoParry and (now - (st.lastParryAt or 0)) < holdCd and not (dodgeM2 and m2Attack) then
 				return
 			end
@@ -1626,19 +1680,51 @@ return function(ctx)
 		end)
 		st.hooks[key] = conn
 
-		-- Hold-M1: Combo / M1Hold attribute changes → re-scan tracks immediately.
+		-- Hold-M1: Combo steps are the reliable signal (tracks replicate late).
 		st.comboHooks = st.comboHooks or {}
 		st.holdHooks = st.holdHooks or {}
 		st.comboHooks[key] = ctx.addConnection(character:GetAttributeChangedSignal("Combo"), function()
 			if not combatFeaturesOn() then
 				return
 			end
+			if not flag("Gakuran Auto Parry", false) and not flag("Gakuran Auto Dodge", false) then
+				-- Still allow viz-only track scan
+			end
+			local combo = tonumber(character:GetAttribute("Combo")) or 0
+			local holding = character:GetAttribute("M1Hold") == true
+				or character:GetAttribute("CombatAttacking") == true
+			if combo >= 1 and combo <= 4 and holding then
+				local myRoot = getLocalRoot()
+				local theirRoot = getRoot(character)
+				if myRoot and theirRoot then
+					local dist = (theirRoot.Position - myRoot.Position).Magnitude
+					local range = numFlag("Gakuran Range Prefilter", 14) + 4
+					if dist <= range then
+						local entry = entryForComboStep(player, combo)
+						debugLog("combo pulse", player.Name, combo, entry.name, string.format("%.1fst", dist))
+						scheduleResponse(player, nil, entry, { fromCombo = true, assumedElapsed = 0.04 })
+					end
+				end
+			end
+			-- Also re-scan tracks (may catch fresher anim)
 			for _, track in ipairs(collectPlayingTracks(character)) do
 				onAttackTrack(player, track)
 			end
 		end)
 		st.holdHooks[key] = ctx.addConnection(character:GetAttributeChangedSignal("M1Hold"), function()
 			if character:GetAttribute("M1Hold") == true then
+				local combo = tonumber(character:GetAttribute("Combo")) or 1
+				if combo >= 1 then
+					local myRoot = getLocalRoot()
+					local theirRoot = getRoot(character)
+					if myRoot and theirRoot then
+						local dist = (theirRoot.Position - myRoot.Position).Magnitude
+						if dist <= numFlag("Gakuran Range Prefilter", 14) + 4 then
+							local entry = entryForComboStep(player, combo)
+							scheduleResponse(player, nil, entry, { fromCombo = true, assumedElapsed = 0.04 })
+						end
+					end
+				end
 				for _, track in ipairs(collectPlayingTracks(character)) do
 					onAttackTrack(player, track)
 				end
@@ -1701,7 +1787,19 @@ return function(ctx)
 						then
 							anyHold = true
 						end
-						for _, track in ipairs(collectPlayingTracks(character)) do
+						-- Prefer freshest attack tracks first (lowest TimePosition = just started).
+						local tracks = collectPlayingTracks(character)
+						table.sort(tracks, function(a, b)
+							local ta, tb = 99, 99
+							pcall(function()
+								ta = tonumber(a.TimePosition) or 99
+							end)
+							pcall(function()
+								tb = tonumber(b.TimePosition) or 99
+							end)
+							return ta < tb
+						end)
+						for _, track in ipairs(tracks) do
 							onAttackTrack(player, track)
 						end
 					end
