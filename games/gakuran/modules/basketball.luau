@@ -1,8 +1,11 @@
 --[[
     xanhub | gakuran | basketball
 
-    Auto Release only: after charging with F, release at perfect meter progress (~0.76 / ~0.50s).
-    ESP: all floor balls + rims (unique instance keys; highlights parented to overlay).
+    Auto Release: hooks BasketballClient._beginShotCharge (via getloadedmodules),
+    then calls self:_releaseShot(perfectProgress) after ~0.50s.
+    No getgc — that freezes/crashes many clients.
+
+    ESP: unique per-instance keys (GetFullName is NOT unique for rack balls).
 ]]
 
 return function(ctx)
@@ -52,16 +55,18 @@ return function(ctx)
 	debugSection:AddToggle({ text = "Basketball Debug Logs", flag = "Gakuran Basketball Debug", state = false })
 	ctx.refs.basketballStatus = debugSection:AddLabel("Status: idle")
 
-	-- State (gakuran seeds basketball = {}) --------------------------------
+	-- State (gakuran seeds basketball = {} — always fill fields) ----------
 
 	if type(ctx.state.basketball) ~= "table" then
 		ctx.state.basketball = {}
 	end
 	local bb = ctx.state.basketball
+
 	bb.releaseToken = tonumber(bb.releaseToken) or 0
-	bb.controller = nil
+	bb.hooked = bb.hooked == true
 	bb.rimCache = type(bb.rimCache) == "table" and bb.rimCache or {}
 	bb.rimCacheAt = tonumber(bb.rimCacheAt) or 0
+	bb.nextEspId = tonumber(bb.nextEspId) or 0
 
 	if type(bb.esp) ~= "table" then
 		bb.esp = {}
@@ -71,6 +76,9 @@ return function(ctx)
 	end
 	if type(bb.esp.billboards) ~= "table" then
 		bb.esp.billboards = {}
+	end
+	if type(bb.esp.instanceKeys) ~= "table" then
+		bb.esp.instanceKeys = setmetatable({}, { __mode = "k" })
 	end
 
 	-- Helpers ------------------------------------------------------------
@@ -96,13 +104,21 @@ return function(ctx)
 		end
 	end
 
-	local function hasBasketballEquipped(character)
-		character = character or ctx.getCharacter()
-		if not character then
-			return false
+	local function bumpToken()
+		bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
+		return bb.releaseToken
+	end
+
+	local function instanceKey(inst)
+		local map = bb.esp.instanceKeys
+		local key = map[inst]
+		if key then
+			return key
 		end
-		return character:GetAttribute("ItemEquipped") == "Basketball"
-			and character:GetAttribute("ItemPhase") == "Equipped"
+		bb.nextEspId = (tonumber(bb.nextEspId) or 0) + 1
+		key = "esp:" .. tostring(bb.nextEspId)
+		map[inst] = key
+		return key
 	end
 
 	local function getRootPart(instance)
@@ -122,9 +138,11 @@ return function(ctx)
 	end
 
 	local function getEspParent()
-		local root = ctx.createOverlayRoot and ctx.createOverlayRoot()
-		if root then
-			return root
+		if ctx.createOverlayRoot then
+			local root = ctx.createOverlayRoot()
+			if root then
+				return root
+			end
 		end
 		if library.base then
 			return library.base
@@ -132,106 +150,26 @@ return function(ctx)
 		return LocalPlayer:FindFirstChildOfClass("PlayerGui")
 	end
 
-	-- BasketballClient controller (methods live on metatable) ------------
-
-	local function isController(value)
-		if type(value) ~= "table" then
-			return false
-		end
-		local okShoot, shoot = pcall(function()
-			return value._shootRemote
-		end)
-		if not okShoot or typeof(shoot) ~= "Instance" or shoot.Name ~= "BasketballShoot" then
-			return false
-		end
-		local okRelease, release = pcall(function()
-			return value._releaseShot
-		end)
-		return okRelease and type(release) == "function"
-	end
-
-	local function findController(force)
-		if not force and bb.controller and isController(bb.controller) then
-			return bb.controller
-		end
-		if type(getgc) ~= "function" then
+	local function findLoadedModule(name)
+		if type(getloadedmodules) ~= "function" then
 			return nil
 		end
-
-		local ok, objects = pcall(getgc, true)
-		if not ok or type(objects) ~= "table" then
-			ok, objects = pcall(getgc)
-			if not ok or type(objects) ~= "table" then
-				return nil
-			end
+		local ok, modules = pcall(getloadedmodules)
+		if not ok or type(modules) ~= "table" then
+			return nil
 		end
-
-		for _, value in ipairs(objects) do
-			if isController(value) then
-				bb.controller = value
-				debugLog("controller found")
-				return value
+		for _, moduleScript in ipairs(modules) do
+			if moduleScript and moduleScript.Name == name then
+				local reqOk, result = pcall(require, moduleScript)
+				if reqOk and type(result) == "table" then
+					return result
+				end
 			end
 		end
 		return nil
 	end
 
-	local function releaseShotOnController(progress)
-		local controller = findController(false)
-		if not controller then
-			controller = findController(true)
-		end
-		if not controller then
-			return false, "no BasketballClient controller"
-		end
-
-		local okCharging, charging = pcall(function()
-			return controller._isCharging
-		end)
-		if not okCharging or not charging then
-			return false, "not charging"
-		end
-
-		local ok, err = pcall(function()
-			controller:_releaseShot(progress)
-		end)
-		if not ok then
-			return false, tostring(err)
-		end
-		return true
-	end
-
-	local function tryKeyRelease()
-		-- Best-effort input simulation (some executors only).
-		local methods = {}
-
-		local vimOk, vim = pcall(function()
-			return game:GetService("VirtualInputManager")
-		end)
-		if vimOk and vim then
-			table.insert(methods, function()
-				vim:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-			end)
-		end
-
-		if type(keyrelease) == "function" then
-			table.insert(methods, function()
-				keyrelease(Enum.KeyCode.F)
-			end)
-			table.insert(methods, function()
-				keyrelease(0x46)
-			end)
-		end
-
-		for _, method in ipairs(methods) do
-			if pcall(method) then
-				return true
-			end
-		end
-		return false
-	end
-
-	local function computeReleaseProgress()
+	local function releaseProgress()
 		local progress = PERFECT_PROGRESS
 		if flag("Gakuran Basketball Humanize", false) then
 			local jitter = math.clamp(tonumber(flag("Gakuran Basketball Jitter", 15)) or 15, 0, 100)
@@ -243,29 +181,26 @@ return function(ctx)
 		return progress
 	end
 
-	local function scheduleAutoRelease()
-		if not flag("Gakuran Basketball Auto Release", false) then
-			return
-		end
-		if not hasBasketballEquipped() then
-			return
-		end
-
-		bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
-		local token = bb.releaseToken
-
-		-- Warm controller lookup while charging starts.
-		task.spawn(function()
-			findController(true)
-		end)
-
+	local function releaseDelay()
 		local delaySec = METER_DURATION * PERFECT_PROGRESS
 		if flag("Gakuran Basketball Humanize", false) then
 			local jitter = math.clamp(tonumber(flag("Gakuran Basketball Jitter", 15)) or 15, 0, 100)
 			local spread = (jitter / 100) * 0.03
 			delaySec = delaySec + ((math.random() * 2 - 1) * spread * METER_DURATION)
 		end
-		delaySec = math.clamp(delaySec, 0.42, METER_DURATION * 0.92)
+		return math.clamp(delaySec, 0.42, METER_DURATION * 0.92)
+	end
+
+	local function scheduleReleaseFromController(controller)
+		if type(controller) ~= "table" then
+			return
+		end
+		if not flag("Gakuran Basketball Auto Release", false) then
+			return
+		end
+
+		local token = bumpToken()
+		local delaySec = releaseDelay()
 
 		task.delay(delaySec, function()
 			if token ~= bb.releaseToken then
@@ -274,35 +209,133 @@ return function(ctx)
 			if ctx.state.unloading or not flag("Gakuran Basketball Auto Release", false) then
 				return
 			end
-			if not hasBasketballEquipped() then
+
+			local stillCharging = false
+			pcall(function()
+				stillCharging = controller._isCharging == true
+			end)
+			if not stillCharging then
 				return
 			end
 
-			local progress = computeReleaseProgress()
-			local released, reason = releaseShotOnController(progress)
-			if released then
+			local progress = releaseProgress()
+			local ok, err = pcall(function()
+				controller:_releaseShot(progress)
+			end)
+
+			if ok then
 				setStatus(string.format("released @ %.0fms (%.2f)", delaySec * 1000, progress))
-				debugLog("controller _releaseShot", progress)
-				return
+				debugLog("released", progress)
+			else
+				setStatus("release failed: " .. tostring(err))
+				debugLog("release error", err)
 			end
-
-			-- Fallback: synthetic key up (often no-ops on executors).
-			if tryKeyRelease() then
-				setStatus(string.format("key-release @ %.0fms (fallback)", delaySec * 1000))
-				debugLog("key release fallback", reason)
-				return
-			end
-
-			setStatus("auto-release failed: " .. tostring(reason))
-			debugLog("release failed", reason)
 		end)
+	end
+
+	-- Hook BasketballClient class methods (safe — no getgc) --------------
+
+	local function installClientHook()
+		if bb.hooked then
+			return true
+		end
+
+		local clientClass = findLoadedModule("BasketballClient")
+		if not clientClass then
+			setStatus("waiting for BasketballClient module")
+			return false
+		end
+
+		local originalBegin = clientClass._beginShotCharge
+		if type(originalBegin) ~= "function" then
+			-- Some dumps put methods only on the prototype metatable.
+			local mt = getmetatable(clientClass)
+			if type(mt) == "table" and type(mt.__index) == "table" then
+				originalBegin = mt.__index._beginShotCharge
+				if type(originalBegin) == "function" then
+					clientClass = mt.__index
+				end
+			end
+		end
+
+		if type(originalBegin) ~= "function" then
+			setStatus("BasketballClient has no _beginShotCharge")
+			debugLog("no _beginShotCharge on", clientClass)
+			return false
+		end
+
+		if type(clientClass._releaseShot) ~= "function" then
+			setStatus("BasketballClient has no _releaseShot")
+			return false
+		end
+
+		local function hookedBegin(self, ...)
+			local results = table.pack(originalBegin(self, ...))
+
+			if flag("Gakuran Basketball Auto Release", false) then
+				local charging = false
+				pcall(function()
+					charging = self._isCharging == true
+				end)
+				if charging then
+					scheduleReleaseFromController(self)
+				else
+					-- Charge may set _isCharging after begin returns; retry next frame.
+					task.defer(function()
+						local ok = false
+						pcall(function()
+							ok = self._isCharging == true
+						end)
+						if ok and flag("Gakuran Basketball Auto Release", false) then
+							scheduleReleaseFromController(self)
+						end
+					end)
+				end
+			end
+
+			return table.unpack(results, 1, results.n)
+		end
+
+		local ok, err = pcall(function()
+			if type(hookfunction) == "function" then
+				local old
+				old = hookfunction(originalBegin, function(self, ...)
+					return hookedBegin(self, ...)
+				end)
+				if type(old) == "function" then
+					originalBegin = old
+				end
+				-- Prefer direct overwrite as well for non-C closures.
+				clientClass._beginShotCharge = hookedBegin
+			else
+				clientClass._beginShotCharge = hookedBegin
+			end
+		end)
+
+		if not ok then
+			-- Plain overwrite fallback.
+			local overwriteOk, overwriteErr = pcall(function()
+				clientClass._beginShotCharge = hookedBegin
+			end)
+			if not overwriteOk then
+				setStatus("hook failed: " .. tostring(err or overwriteErr))
+				return false
+			end
+		end
+
+		bb.hooked = true
+		bb.clientClass = clientClass
+		setStatus("auto release ready")
+		debugLog("BasketballClient._beginShotCharge hooked")
+		return true
 	end
 
 	-- Rim / ball discovery -----------------------------------------------
 
 	local function refreshRimCache(force)
 		local now = os.clock()
-		if not force and (now - bb.rimCacheAt) < 1.5 and #bb.rimCache > 0 then
+		local cacheAge = now - (tonumber(bb.rimCacheAt) or 0)
+		if not force and cacheAge < 1.5 and type(bb.rimCache) == "table" and #bb.rimCache > 0 then
 			return bb.rimCache
 		end
 
@@ -316,14 +349,10 @@ return function(ctx)
 			end
 		end
 
-		-- Prefer structured paths first.
 		local hoops = Workspace:FindFirstChild("Hoops")
 		if hoops then
 			for _, child in ipairs(hoops:GetChildren()) do
-				local rim = child:FindFirstChild("Rim", true)
-				if rim then
-					addRim(rim)
-				end
+				addRim(child:FindFirstChild("Rim", true))
 			end
 			for _, descendant in ipairs(hoops:GetDescendants()) do
 				if descendant.Name == "Rim" then
@@ -332,14 +361,11 @@ return function(ctx)
 			end
 		end
 
-		-- Fallback: workspace scan (Hoops folder can report empty children while rims still exist).
 		if #rims == 0 then
 			for _, descendant in ipairs(Workspace:GetDescendants()) do
 				if descendant.Name == "Rim" and descendant:IsA("BasePart") then
-					local parent = descendant.Parent
-					if parent and (parent.Name == "Hoop" or parent.Name:find("Hoop") or parent.Name:find("Basket")) then
-						addRim(descendant)
-					elseif descendant:GetFullName():find("Hoops") then
+					local fullName = descendant:GetFullName()
+					if string.find(fullName, "Hoop", 1, true) or string.find(fullName, "Hoops", 1, true) then
 						addRim(descendant)
 					end
 				end
@@ -356,13 +382,11 @@ return function(ctx)
 		local items = Workspace:FindFirstChild("Items")
 		if items then
 			for _, model in ipairs(items:GetChildren()) do
-				if model.Name == "Basketball" or model.Name:lower():find("basket") then
+				if model.Name == "Basketball" then
 					table.insert(balls, model)
 				end
 			end
 		end
-
-		-- Held balls on characters.
 		for _, player in ipairs(Players:GetPlayers()) do
 			local character = player.Character
 			if character then
@@ -372,7 +396,6 @@ return function(ctx)
 				end
 			end
 		end
-
 		return balls
 	end
 
@@ -380,11 +403,15 @@ return function(ctx)
 
 	local function clearEsp()
 		if type(bb.esp) ~= "table" then
-			bb.esp = { highlights = {}, billboards = {} }
+			bb.esp = { highlights = {}, billboards = {}, instanceKeys = setmetatable({}, { __mode = "k" }) }
 			return
 		end
-		bb.esp.highlights = type(bb.esp.highlights) == "table" and bb.esp.highlights or {}
-		bb.esp.billboards = type(bb.esp.billboards) == "table" and bb.esp.billboards or {}
+		if type(bb.esp.highlights) ~= "table" then
+			bb.esp.highlights = {}
+		end
+		if type(bb.esp.billboards) ~= "table" then
+			bb.esp.billboards = {}
+		end
 
 		for key, instance in pairs(bb.esp.highlights) do
 			pcall(function()
@@ -465,10 +492,21 @@ return function(ctx)
 
 	local function updateEsp()
 		if type(bb.esp) ~= "table" then
-			bb.esp = { highlights = {}, billboards = {} }
+			bb.esp = {
+				highlights = {},
+				billboards = {},
+				instanceKeys = setmetatable({}, { __mode = "k" }),
+			}
 		end
-		bb.esp.highlights = type(bb.esp.highlights) == "table" and bb.esp.highlights or {}
-		bb.esp.billboards = type(bb.esp.billboards) == "table" and bb.esp.billboards or {}
+		if type(bb.esp.highlights) ~= "table" then
+			bb.esp.highlights = {}
+		end
+		if type(bb.esp.billboards) ~= "table" then
+			bb.esp.billboards = {}
+		end
+		if type(bb.esp.instanceKeys) ~= "table" then
+			bb.esp.instanceKeys = setmetatable({}, { __mode = "k" })
+		end
 
 		if not flag("Gakuran Basketball ESP", false) then
 			if next(bb.esp.highlights) or next(bb.esp.billboards) then
@@ -480,27 +518,16 @@ return function(ctx)
 		local root = ctx.getRoot()
 		local rootPos = root and root.Position
 		local seen = {}
-		local ballIndex = 0
-		local rimIndex = 0
+		local ballCount = 0
+		local rimCount = 0
 
 		if flag("Gakuran Basketball ESP Rims", true) then
-			local rims = refreshRimCache(false)
 			local color = Color3.fromRGB(255, 140, 40)
-			if not bb.esp._rimKeys then
-				bb.esp._rimKeys = setmetatable({}, { __mode = "k" })
-			end
-
-			for _, rim in ipairs(rims) do
+			for _, rim in ipairs(refreshRimCache(false)) do
 				if rim.Parent then
-					rimIndex += 1
-					local key = bb.esp._rimKeys[rim]
-					if not key then
-						bb.esp._rimId = (bb.esp._rimId or 0) + 1
-						key = "rim:" .. bb.esp._rimId
-						bb.esp._rimKeys[rim] = key
-					end
+					rimCount = rimCount + 1
+					local key = instanceKey(rim)
 					seen[key] = true
-
 					local adorn = (rim.Parent and rim.Parent:IsA("Model") and rim.Parent) or rim
 					ensureHighlight(key, adorn, color)
 
@@ -515,28 +542,19 @@ return function(ctx)
 		end
 
 		if flag("Gakuran Basketball ESP Balls", true) then
-			local color = Color3.fromRGB(255, 170, 60)
+			local floorColor = Color3.fromRGB(255, 170, 60)
 			local heldColor = Color3.fromRGB(80, 200, 255)
-			if not bb.esp._ballKeys then
-				bb.esp._ballKeys = setmetatable({}, { __mode = "k" })
-			end
 
 			for _, ball in ipairs(collectBalls()) do
 				if ball.Parent then
-					ballIndex += 1
-					local key = bb.esp._ballKeys[ball]
-					if not key then
-						bb.esp._ballId = (bb.esp._ballId or 0) + 1
-						key = "ball:" .. bb.esp._ballId
-						bb.esp._ballKeys[ball] = key
-					end
+					ballCount = ballCount + 1
+					local key = instanceKey(ball)
 					seen[key] = true
 
 					local adorn = ball:IsA("Model") and ball
 						or (ball.Parent and ball.Parent:IsA("Model") and ball.Parent)
 						or ball
 
-					-- Floor balls under Workspace.Items; held balls under a character.
 					local playerOwner = nil
 					local parent = ball:IsA("Model") and ball or ball.Parent
 					while parent and parent ~= Workspace do
@@ -549,8 +567,8 @@ return function(ctx)
 						parent = parent.Parent
 					end
 
-					local useColor = playerOwner and heldColor or color
-					ensureHighlight(key, adorn, useColor)
+					local color = playerOwner and heldColor or floorColor
+					ensureHighlight(key, adorn, color)
 
 					if flag("Gakuran Basketball ESP Distance", true) and rootPos then
 						local part = getRootPart(ball)
@@ -559,7 +577,7 @@ return function(ctx)
 							seen[lkey] = true
 							local dist = (part.Position - rootPos).Magnitude
 							local tag = playerOwner and playerOwner.DisplayName or "Ball"
-							ensureBillboard(lkey, part, string.format("%s  %.0fst", tag, dist), useColor)
+							ensureBillboard(lkey, part, string.format("%s  %.0fst", tag, dist), color)
 						end
 					end
 				end
@@ -584,13 +602,16 @@ return function(ctx)
 		end
 
 		if flag("Gakuran Basketball Debug", false) then
-			setStatus(string.format("esp balls=%d rims=%d", ballIndex, #refreshRimCache(false)))
+			setStatus(string.format("esp balls=%d rims=%d hooked=%s", ballCount, rimCount, tostring(bb.hooked)))
 		end
 	end
 
 	-- Setup --------------------------------------------------------------
 
 	local function setup()
+		-- Install when ball module exists; retry until equipped once.
+		installClientHook()
+
 		ctx.addConnection(UserInputService.InputBegan, function(input, gameProcessed)
 			if gameProcessed or ctx.state.unloading then
 				return
@@ -598,56 +619,54 @@ return function(ctx)
 			if input.KeyCode ~= Enum.KeyCode.F then
 				return
 			end
-			if not hasBasketballEquipped() then
-				return
+			-- Ensure hook is installed once player starts using basketball.
+			if not bb.hooked then
+				installClientHook()
 			end
-			if not flag("Gakuran Basketball Auto Release", false) then
-				return
-			end
-			scheduleAutoRelease()
 		end)
 
 		ctx.addConnection(UserInputService.InputEnded, function(input)
 			if input.KeyCode == Enum.KeyCode.F then
-				-- User released manually — cancel pending auto-release.
-				bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
+				-- Manual release cancels pending auto-release.
+				bumpToken()
 			end
 		end)
 
-		-- Re-find controller when ball is equipped.
-		local function onCharacter(character)
+		local function watchCharacter(character)
 			if not character then
 				return
 			end
-			character:GetAttributeChangedSignal("ItemEquipped"):Connect(function()
+			ctx.addConnection(character:GetAttributeChangedSignal("ItemEquipped"), function()
 				if character:GetAttribute("ItemEquipped") == "Basketball" then
-					task.defer(function()
-						findController(true)
-					end)
-				end
-			end)
-			character:GetAttributeChangedSignal("ItemPhase"):Connect(function()
-				if hasBasketballEquipped(character) then
-					task.defer(function()
-						findController(true)
-					end)
+					if not bb.hooked then
+						installClientHook()
+					end
 				end
 			end)
 		end
 
 		if LocalPlayer.Character then
-			onCharacter(LocalPlayer.Character)
+			watchCharacter(LocalPlayer.Character)
 		end
-		ctx.addConnection(LocalPlayer.CharacterAdded, onCharacter)
+		ctx.addConnection(LocalPlayer.CharacterAdded, watchCharacter)
 
 		local espAccum = 0
+		local hookAccum = 0
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
 				return
 			end
 
+			if not bb.hooked then
+				hookAccum = hookAccum + dt
+				if hookAccum >= 2 then
+					hookAccum = 0
+					installClientHook()
+				end
+			end
+
 			if flag("Gakuran Basketball ESP", false) then
-				espAccum += dt
+				espAccum = espAccum + dt
 				if espAccum >= 0.3 then
 					espAccum = 0
 					local ok, err = pcall(updateEsp)
@@ -655,22 +674,26 @@ return function(ctx)
 						debugLog("esp error", err)
 					end
 				end
-			elseif type(bb.esp.highlights) == "table" and (next(bb.esp.highlights) or next(bb.esp.billboards)) then
-				clearEsp()
+			elseif type(bb.esp) == "table" and type(bb.esp.highlights) == "table" then
+				if next(bb.esp.highlights) or next(bb.esp.billboards) then
+					clearEsp()
+				end
 			end
 		end)
 
-		-- Warm rim cache once.
 		task.defer(function()
 			refreshRimCache(true)
-			setStatus(string.format("idle · rims cached=%d", #bb.rimCache))
+			setStatus(string.format(
+				"idle · rims=%d · hook=%s",
+				#bb.rimCache,
+				bb.hooked and "on" or "pending"
+			))
 		end)
 	end
 
 	library:AddCleanup(function()
-		bb.releaseToken = (tonumber(bb.releaseToken) or 0) + 1
+		bumpToken()
 		pcall(clearEsp)
-		bb.controller = nil
 	end)
 
 	return { setup = setup }
