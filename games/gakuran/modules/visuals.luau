@@ -363,7 +363,7 @@ return function(ctx)
 		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 		highlight.Parent = overlay
 
-		local entry = {
+			local entry = {
 			player = player,
 			root = root,
 			box = box,
@@ -378,30 +378,52 @@ return function(ctx)
 			highlight = highlight,
 			infoCache = nil,
 			infoCacheAt = 0,
-			-- Static world box (not limb-AABB — limbs expand every frame)
+			textAt = 0,
+			nameText = "",
+			detailText = "",
+			nameLines = 1,
+			-- Cached character refs (avoid FindFirstChild every frame)
+			char = nil,
+			humanoid = nil,
+			rootPart = nil,
+			-- Static world box (not limb-AABB)
 			stableWidth = nil,
 			stableHeight = nil,
 			stableOffsetY = nil,
 			stableChar = nil,
 			stableAt = 0,
+			-- Last drawn rect (skip redundant GUI writes)
+			lx = nil,
+			ly = nil,
+			lw = nil,
+			lh = nil,
+			lastHp = nil,
+			lastStm = nil,
+			drawn = false,
 		}
 		espState.entries[player] = entry
 		return entry
 	end
 
 	local function hideEntry(entry)
-		if not entry then
+		if not entry or not entry.drawn then
+			if entry then
+				entry.drawn = false
+			end
 			return
 		end
+		entry.drawn = false
 		entry.box.Visible = false
 		entry.fill.Visible = false
 		entry.hpBg.Visible = false
 		entry.stmBg.Visible = false
 		entry.nameLabel.Visible = false
 		entry.detailLabel.Visible = false
-		if entry.highlight then
+		if entry.highlight and entry.highlight.Enabled then
 			entry.highlight.Enabled = false
+			entry.highlight.Adornee = nil
 		end
+		entry.lx, entry.ly, entry.lw, entry.lh = nil, nil, nil, nil
 	end
 
 	local function isR6(character)
@@ -411,18 +433,7 @@ return function(ctx)
 	end
 
 	local function snap(n)
-		return math.floor((tonumber(n) or 0) + 0.5)
-	end
-
-	-- IgnoreGuiInset ScreenGui (xanhub_ui): AbsolutePosition.Y is -GuiInset (~-58).
-	-- WorldToViewportPoint is already full-viewport pixels; Position offsets on that
-	-- overlay are also full-viewport. Subtracting AbsolutePosition pushed boxes ~58px down.
-	local function worldToOverlay(camera, worldPos)
-		local sp, onScreen = camera:WorldToViewportPoint(worldPos)
-		if sp.Z <= 0.05 then
-			return nil, nil, false, sp.Z
-		end
-		return sp.X, sp.Y, onScreen, sp.Z
+		return math.floor(n + 0.5)
 	end
 
 	-- Fixed world-space size from height scale + HipHeight (not animated limbs).
@@ -431,19 +442,20 @@ return function(ctx)
 		local r6 = isR6(character)
 		local pd = getPlayerData(character)
 		local scale = tonumber(attr(pd, "CurrentHeight") or attr(pd, "Height")) or 1
-		scale = math.clamp(scale, 0.75, 1.6)
+		if scale < 0.75 then
+			scale = 0.75
+		elseif scale > 1.6 then
+			scale = 1.6
+		end
 
 		local hip = hum and tonumber(hum.HipHeight) or (r6 and 0 or 2 * scale)
-		if hip <= 0 then
+		if not hip or hip <= 0 then
 			hip = r6 and 0 or 2 * scale
 		end
 
-		-- Feet: Humanoid HipHeight is ground→HRP bottom (pose-independent).
 		local hrpHalf = rootPart.Size.Y * 0.5
 		local feetBelow = hip + hrpHalf
 
-		-- Crown: clamp head relative height so idle bob can't stretch the box.
-		-- Live Gakuran R15 sits ~1.7×scale above HRP (crown), not full GetBoundingBox.
 		local head = character:FindFirstChild("Head")
 		local headHalf = (head and head:IsA("BasePart") and head.Size.Y * 0.5) or (0.5 * scale)
 		local rawHeadAbove
@@ -454,22 +466,36 @@ return function(ctx)
 		end
 		local lo = (r6 and 2.0 or 1.35) * scale
 		local hi = (r6 and 2.8 or 2.15) * scale
-		local headAbove = math.clamp(rawHeadAbove, lo, hi)
+		local headAbove = rawHeadAbove
+		if headAbove < lo then
+			headAbove = lo
+		elseif headAbove > hi then
+			headAbove = hi
+		end
 
-		local height = math.clamp(feetBelow + headAbove, r6 and 4.0 or 4.4, r6 and 6.8 or 7.6)
+		local height = feetBelow + headAbove
+		local minH = r6 and 4.0 or 4.4
+		local maxH = r6 and 6.8 or 7.6
+		if height < minH then
+			height = minH
+		elseif height > maxH then
+			height = maxH
+		end
 		local offsetY = (headAbove - feetBelow) * 0.5
-		-- Shoulder width tracks height attr (taller students → slightly wider)
-		local width = math.clamp((r6 and 1.95 or 2.05) * scale, 1.65, 3.2)
+		local width = (r6 and 1.95 or 2.05) * scale
+		if width < 1.65 then
+			width = 1.65
+		elseif width > 3.2 then
+			width = 3.2
+		end
 
 		return width, height, offsetY
 	end
 
-	local function ensureStableBounds(entry, character, rootPart)
-		local now = os.clock()
+	local function ensureStableBounds(entry, character, rootPart, now)
 		if entry.stableChar == character
 			and entry.stableWidth
-			and entry.stableHeight
-			and (now - (entry.stableAt or 0)) < 2.5
+			and (now - (entry.stableAt or 0)) < 3
 		then
 			return entry.stableWidth, entry.stableHeight, entry.stableOffsetY
 		end
@@ -482,30 +508,55 @@ return function(ctx)
 		return w, h, oy
 	end
 
-	-- Camera-facing billboard of FIXED stud size — no limb AABB expansion.
-	local function getCharacterBounds(camera, character, rootPart, entry)
-		local width, height, offsetY = ensureStableBounds(entry, character, rootPart)
-		local center = rootPart.Position + Vector3.new(0, offsetY, 0)
-		local worldUp = Vector3.new(0, height * 0.5, 0)
-		local cameraRight = camera.CFrame.RightVector * (width * 0.5)
-		local corners = {
-			center + worldUp - cameraRight,
-			center + worldUp + cameraRight,
-			center - worldUp - cameraRight,
-			center - worldUp + cameraRight,
-		}
+	-- Zero-alloc camera billboard: 4 WorldToViewport calls, no tables.
+	-- Full rate — boxes stay glued to characters with zero tick lag.
+	local function projectBox(camera, rootPart, width, height, offsetY, camRightX, camRightY, camRightZ)
+		local rp = rootPart.Position
+		local cx = rp.X
+		local cy = rp.Y + offsetY
+		local cz = rp.Z
+		local halfH = height * 0.5
+		local halfW = width * 0.5
+		local rx = camRightX * halfW
+		local ry = camRightY * halfW
+		local rz = camRightZ * halfW
 
-		local minX, minY = math.huge, math.huge
-		local maxX, maxY = -math.huge, -math.huge
-		for _, world in ipairs(corners) do
-			local x, y, _, z = worldToOverlay(camera, world)
-			if not x or z <= 0.05 then
-				return nil
+		local minX, minY = 1e9, 1e9
+		local maxX, maxY = -1e9, -1e9
+
+		-- four corners: (±right, ±up)
+		local function accum(wx, wy, wz)
+			local sp, _ = camera:WorldToViewportPoint(Vector3.new(wx, wy, wz))
+			if sp.Z <= 0.05 then
+				return false
 			end
-			minX = math.min(minX, x)
-			minY = math.min(minY, y)
-			maxX = math.max(maxX, x)
-			maxY = math.max(maxY, y)
+			local x, y = sp.X, sp.Y
+			if x < minX then
+				minX = x
+			end
+			if y < minY then
+				minY = y
+			end
+			if x > maxX then
+				maxX = x
+			end
+			if y > maxY then
+				maxY = y
+			end
+			return true
+		end
+
+		if not accum(cx - rx, cy + halfH, cz - rz) then
+			return nil
+		end
+		if not accum(cx + rx, cy + halfH, cz + rz) then
+			return nil
+		end
+		if not accum(cx - rx, cy - halfH, cz - rz) then
+			return nil
+		end
+		if not accum(cx + rx, cy - halfH, cz + rz) then
+			return nil
 		end
 
 		if maxX <= minX or maxY <= minY then
@@ -513,7 +564,12 @@ return function(ctx)
 		end
 
 		local projectedH = maxY - minY
-		local pad = math.clamp(projectedH * 0.02, 1, 4)
+		local pad = projectedH * 0.02
+		if pad < 1 then
+			pad = 1
+		elseif pad > 4 then
+			pad = 4
+		end
 		return snap(minX - pad), snap(minY - pad), snap(maxX + pad), snap(maxY + pad)
 	end
 
@@ -526,23 +582,21 @@ return function(ctx)
 		return HP_LOW
 	end
 
-	local function updatePlayer(player, camera, localRoot)
-		if player == LocalPlayer and not flag("Gakuran ESP Show Self", false) then
-			local entry = espState.entries[player]
-			if entry then
-				hideEntry(entry)
-			end
-			return
-		end
-
-		-- Gakuran characters live under Workspace.Players (same instance as Character usually)
+	-- Resolve Workspace.Players char once; cache parts on entry.
+	local function resolveCharacter(player, playersFolder)
 		local character = player.Character
-		local folder = Workspace:FindFirstChild("Players")
-		if folder then
-			local named = folder:FindFirstChild(player.Name)
+		if playersFolder then
+			local named = playersFolder:FindFirstChild(player.Name)
 			if named and named:FindFirstChildOfClass("Humanoid") then
 				character = named
 			end
+		end
+		return character
+	end
+
+	local function cacheParts(entry, character)
+		if entry.char == character and entry.rootPart and entry.rootPart.Parent and entry.humanoid and entry.humanoid.Parent then
+			return entry.humanoid, entry.rootPart
 		end
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		local rootPart = character and (
@@ -551,173 +605,336 @@ return function(ctx)
 			or character:FindFirstChild("UpperTorso")
 			or character.PrimaryPart
 		)
+		entry.char = character
+		entry.humanoid = humanoid
+		entry.rootPart = rootPart
+		-- force remeasure when body swaps
+		entry.stableChar = nil
+		return humanoid, rootPart
+	end
 
-		if not character or not humanoid or not rootPart or humanoid.Health <= 0 then
-			local entry = espState.entries[player]
-			if entry then
-				hideEntry(entry)
-			end
-			return
+	-- settings = frame-cached flags (read once per RenderStepped)
+	local function updatePlayer(player, camera, localRoot, playersFolder, settings, now)
+		if player == LocalPlayer and not settings.showSelf then
+			hideEntry(espState.entries[player])
+			return false
 		end
 
-		local dist = localRoot and (rootPart.Position - localRoot.Position).Magnitude or 0
-		local maxDist = numFlag("Gakuran ESP Max Distance", 600)
-		if dist > maxDist then
-			local entry = espState.entries[player]
-			if entry then
-				hideEntry(entry)
-			end
-			return
+		local character = resolveCharacter(player, playersFolder)
+		if not character then
+			hideEntry(espState.entries[player])
+			return false
 		end
 
-		local entry = ensureEntry(player)
+		local entry = espState.entries[player]
+		local humanoid, rootPart
+		if entry then
+			humanoid, rootPart = cacheParts(entry, character)
+		else
+			humanoid = character:FindFirstChildOfClass("Humanoid")
+			rootPart = character:FindFirstChild("HumanoidRootPart")
+				or character:FindFirstChild("Torso")
+				or character:FindFirstChild("UpperTorso")
+				or character.PrimaryPart
+		end
+
+		if not humanoid or not rootPart or humanoid.Health <= 0 then
+			hideEntry(entry)
+			return false
+		end
+
+		-- Squared distance — no sqrt until we need display
+		local dx, dy, dz = 0, 0, 0
+		if localRoot then
+			local rp = rootPart.Position
+			local lp = localRoot.Position
+			dx = rp.X - lp.X
+			dy = rp.Y - lp.Y
+			dz = rp.Z - lp.Z
+		end
+		local distSq = dx * dx + dy * dy + dz * dz
+		if distSq > settings.maxDistSq then
+			hideEntry(entry)
+			return false
+		end
+
+		entry = entry or ensureEntry(player)
 		if not entry then
-			return
+			return false
+		end
+		if entry.char ~= character then
+			cacheParts(entry, character)
+			humanoid, rootPart = entry.humanoid, entry.rootPart
+			if not humanoid or not rootPart then
+				hideEntry(entry)
+				return false
+			end
 		end
 
-		-- Static camera-facing box (height-scale sized, no limb expansion)
-		local minX, minY, maxX, maxY = getCharacterBounds(camera, character, rootPart, entry)
+		local width, height, offsetY = ensureStableBounds(entry, character, rootPart, now)
+		local minX, minY, maxX, maxY = projectBox(
+			camera,
+			rootPart,
+			width,
+			height,
+			offsetY,
+			settings.camRightX,
+			settings.camRightY,
+			settings.camRightZ
+		)
 		if not minX then
 			hideEntry(entry)
-			return
+			return false
 		end
-
-		local color = colorFlag("Gakuran ESP Color", ACCENT)
-		local nameColor = colorFlag("Gakuran ESP Name Color", WHITE)
-		local textSize = numFlag("Gakuran ESP Text Size", 13)
-		local thickness = numFlag("Gakuran ESP Box Thickness", 2)
-		local fillOpacity = numFlag("Gakuran ESP Fill Opacity", 14) / 100
 
 		local w = maxX - minX
 		local h = maxY - minY
-		local x = minX
-		local y = minY
+		-- Floor screen width so distant boxes stay readable (not needle-thin)
+		if w < 10 then
+			local mid = (minX + maxX) * 0.5
+			minX = snap(mid - 5)
+			maxX = minX + 10
+			w = 10
+		end
 		if w < 3 or h < 6 then
 			hideEntry(entry)
-			return
+			return false
 		end
 
-		-- Cache PlayerData text ~6.5x/sec (attrs rarely change mid-frame).
-		local now = os.clock()
-		local info = entry.infoCache
-		if not info or (now - (entry.infoCacheAt or 0)) > 0.15 then
-			info = resolveInfo(player, character)
-			entry.infoCache = info
-			entry.infoCacheAt = now
+		local x, y = minX, minY
+		local color = settings.color
+		local rectChanged = entry.lx ~= x or entry.ly ~= y or entry.lw ~= w or entry.lh ~= h
+		if rectChanged then
+			entry.lx, entry.ly, entry.lw, entry.lh = x, y, w, h
 		end
+		entry.drawn = true
 
-		-- Box (pixel-snapped static rect)
-		if flag("Gakuran ESP Boxes", true) then
-			entry.box.Visible = true
-			entry.box.Position = UDim2.fromOffset(x, y)
-			entry.box.Size = UDim2.fromOffset(w, h)
-			entry.boxStroke.Color = color
-			entry.boxStroke.Thickness = thickness
-			entry.box.BackgroundTransparency = 1
-		else
+		-- Geometry every frame (smooth). Property writes only when rect moves.
+		if settings.boxes then
+			if not entry.box.Visible then
+				entry.box.Visible = true
+			end
+			if rectChanged then
+				entry.box.Position = UDim2.fromOffset(x, y)
+				entry.box.Size = UDim2.fromOffset(w, h)
+			end
+			if entry.boxStroke.Color ~= color then
+				entry.boxStroke.Color = color
+			end
+			if entry.boxStroke.Thickness ~= settings.thickness then
+				entry.boxStroke.Thickness = settings.thickness
+			end
+		elseif entry.box.Visible then
 			entry.box.Visible = false
 		end
 
-		if flag("Gakuran ESP Filled Boxes", false) then
-			entry.fill.Visible = true
-			entry.fill.Position = UDim2.fromOffset(x, y)
-			entry.fill.Size = UDim2.fromOffset(w, h)
-			entry.fill.BackgroundColor3 = color
-			entry.fill.BackgroundTransparency = math.clamp(1 - fillOpacity, 0.4, 1)
-		else
+		if settings.filled then
+			if not entry.fill.Visible then
+				entry.fill.Visible = true
+			end
+			if rectChanged then
+				entry.fill.Position = UDim2.fromOffset(x, y)
+				entry.fill.Size = UDim2.fromOffset(w, h)
+			end
+			if entry.fill.BackgroundColor3 ~= color then
+				entry.fill.BackgroundColor3 = color
+			end
+			local ft = settings.fillTransparency
+			if entry.fill.BackgroundTransparency ~= ft then
+				entry.fill.BackgroundTransparency = ft
+			end
+		elseif entry.fill.Visible then
 			entry.fill.Visible = false
 		end
 
-		-- Health bar (left)
-		if flag("Gakuran ESP Health Bar", true) then
-			local ratio = math.clamp(info.health / math.max(info.maxHealth, 1), 0, 1)
-			local barW = 3
-			entry.hpBg.Visible = true
-			entry.hpBg.Position = UDim2.fromOffset(x - barW - 3, y)
-			entry.hpBg.Size = UDim2.fromOffset(barW, h)
-			entry.hpFill.Size = UDim2.new(1, 0, ratio, 0)
-			entry.hpFill.BackgroundColor3 = healthColor(ratio)
-			entry.hpFill.Visible = true
+		-- Bars: position full-rate, fill values throttled with info
+		local refreshText = (now - (entry.infoCacheAt or 0)) > 0.2
+		local info = entry.infoCache
+		if refreshText or not info then
+			info = resolveInfo(player, character)
+			-- Live vitals still cheap
+			info.health = humanoid.Health
+			info.maxHealth = math.max(humanoid.MaxHealth, 1)
+			info.stamina = tonumber(attr(character, "Stamina")) or info.stamina or 0
+			entry.infoCache = info
+			entry.infoCacheAt = now
 		else
+			-- Vitals every frame without full attr resolve
+			info.health = humanoid.Health
+			info.maxHealth = math.max(humanoid.MaxHealth, 1)
+		end
+
+		if settings.hpBar then
+			local ratio = info.health / info.maxHealth
+			if ratio < 0 then
+				ratio = 0
+			elseif ratio > 1 then
+				ratio = 1
+			end
+			if not entry.hpBg.Visible then
+				entry.hpBg.Visible = true
+			end
+			if rectChanged then
+				entry.hpBg.Position = UDim2.fromOffset(x - 6, y)
+				entry.hpBg.Size = UDim2.fromOffset(3, h)
+			end
+			if entry.lastHp ~= ratio then
+				entry.lastHp = ratio
+				entry.hpFill.Size = UDim2.new(1, 0, ratio, 0)
+				entry.hpFill.BackgroundColor3 = healthColor(ratio)
+			end
+		elseif entry.hpBg.Visible then
 			entry.hpBg.Visible = false
 		end
 
-		-- Stamina bar (right)
-		if flag("Gakuran ESP Stamina Bar", true) then
-			local ratio = math.clamp(info.stamina / math.max(info.maxStamina, 1), 0, 1)
-			local barW = 3
-			entry.stmBg.Visible = true
-			entry.stmBg.Position = UDim2.fromOffset(x + w + 3, y)
-			entry.stmBg.Size = UDim2.fromOffset(barW, h)
-			entry.stmFill.Size = UDim2.new(1, 0, ratio, 0)
-			entry.stmFill.BackgroundColor3 = STM
-			entry.stmFill.Visible = true
-		else
+		if settings.stmBar then
+			-- Stamina attr: sample with text refresh (not every frame FindAttribute spam)
+			if refreshText then
+				info.stamina = tonumber(attr(character, "Stamina")) or 0
+			end
+			local ratio = (info.stamina or 0) / (info.maxStamina or 100)
+			if ratio < 0 then
+				ratio = 0
+			elseif ratio > 1 then
+				ratio = 1
+			end
+			if not entry.stmBg.Visible then
+				entry.stmBg.Visible = true
+			end
+			if rectChanged then
+				entry.stmBg.Position = UDim2.fromOffset(x + w + 3, y)
+				entry.stmBg.Size = UDim2.fromOffset(3, h)
+			end
+			if entry.lastStm ~= ratio then
+				entry.lastStm = ratio
+				entry.stmFill.Size = UDim2.new(1, 0, ratio, 0)
+			end
+		elseif entry.stmBg.Visible then
 			entry.stmBg.Visible = false
 		end
 
-		-- Name + details
-		local showNames = flag("Gakuran ESP Names", true)
-		local linesTop = {}
-		local linesBottom = {}
-
-		if showNames then
-			table.insert(linesTop, info.gameName)
-			if flag("Gakuran ESP Real Names", false) then
-				table.insert(linesTop, "@" .. info.robloxName)
+		-- Labels: position every frame, string rebuild ~5/s (no ticky box, no GC spam)
+		local dist = math.sqrt(distSq)
+		local needTextRebuild = refreshText or (now - (entry.textAt or 0)) > 0.12
+		if needTextRebuild then
+			entry.textAt = now
+			local nameText = ""
+			local nameLines = 0
+			if settings.names then
+				nameText = info.gameName or ""
+				nameLines = 1
+				if settings.realNames then
+					nameText = nameText .. "\n@" .. info.robloxName
+					nameLines = 2
+				end
 			end
+			entry.nameText = nameText
+			entry.nameLines = nameLines
+
+			local parts = nil
+			local n = 0
+			if settings.distance then
+				n = n + 1
+				parts = parts or {}
+				parts[n] = string.format("%.0fst", dist)
+			end
+			if settings.style and type(info.style) == "string" and info.style ~= "" then
+				n = n + 1
+				parts = parts or {}
+				parts[n] = info.style
+			end
+			if settings.grade and type(info.grade) == "string" and info.grade ~= "" then
+				n = n + 1
+				parts = parts or {}
+				parts[n] = info.grade
+			end
+			if settings.age and info.age ~= nil then
+				n = n + 1
+				parts = parts or {}
+				parts[n] = "Age " .. tostring(info.age)
+			end
+			if settings.height and info.heightImperial then
+				n = n + 1
+				parts = parts or {}
+				parts[n] = info.heightImperial .. " / " .. (info.heightMetric or "")
+			end
+			entry.detailText = (parts and table.concat(parts, " · ")) or ""
+		elseif settings.distance and entry.detailText ~= "" then
+			-- keep distance roughly fresh without full rebuild every frame
+			-- (handled in rebuild window above)
 		end
 
-		if flag("Gakuran ESP Distance", true) then
-			table.insert(linesBottom, string.format("%.0fst", dist))
-		end
-		if flag("Gakuran ESP Combat Style", true) and type(info.style) == "string" and info.style ~= "" then
-			table.insert(linesBottom, tostring(info.style))
-		end
-		if flag("Gakuran ESP Grade", true) and type(info.grade) == "string" and info.grade ~= "" then
-			table.insert(linesBottom, info.grade)
-		end
-		if flag("Gakuran ESP Age", false) and info.age ~= nil then
-			table.insert(linesBottom, "Age " .. tostring(info.age))
-		end
-		if flag("Gakuran ESP Height", false) and info.heightImperial then
-			table.insert(linesBottom, info.heightImperial .. " / " .. (info.heightMetric or ""))
-		end
-
-		if #linesTop > 0 then
-			entry.nameLabel.Visible = true
-			entry.nameLabel.Text = table.concat(linesTop, "\n")
-			entry.nameLabel.TextColor3 = nameColor
-			entry.nameLabel.TextSize = textSize
-			local lineCount = #linesTop
-			local nameH = textSize * lineCount + 4
-			entry.nameLabel.Size = UDim2.fromOffset(math.max(w + 80, 120), nameH)
-			entry.nameLabel.Position = UDim2.fromOffset(x + w * 0.5 - entry.nameLabel.Size.X.Offset * 0.5, y - nameH - 2)
-		else
+		if entry.nameLines > 0 and entry.nameText ~= "" then
+			local nameH = settings.textSize * entry.nameLines + 4
+			local nameW = w + 80
+			if nameW < 120 then
+				nameW = 120
+			end
+			if not entry.nameLabel.Visible then
+				entry.nameLabel.Visible = true
+			end
+			if entry.nameLabel.Text ~= entry.nameText then
+				entry.nameLabel.Text = entry.nameText
+			end
+			if entry.nameLabel.TextColor3 ~= settings.nameColor then
+				entry.nameLabel.TextColor3 = settings.nameColor
+			end
+			if entry.nameLabel.TextSize ~= settings.textSize then
+				entry.nameLabel.TextSize = settings.textSize
+			end
+			if rectChanged or needTextRebuild then
+				entry.nameLabel.Size = UDim2.fromOffset(nameW, nameH)
+				entry.nameLabel.Position = UDim2.fromOffset(x + w * 0.5 - nameW * 0.5, y - nameH - 2)
+			end
+		elseif entry.nameLabel.Visible then
 			entry.nameLabel.Visible = false
 		end
 
-		if #linesBottom > 0 then
-			entry.detailLabel.Visible = true
-			entry.detailLabel.Text = table.concat(linesBottom, " · ")
-			entry.detailLabel.TextColor3 = MUTED
-			entry.detailLabel.TextSize = math.max(10, textSize - 2)
-			local detH = textSize + 2
-			entry.detailLabel.Size = UDim2.fromOffset(math.max(w + 100, 140), detH)
-			entry.detailLabel.Position = UDim2.fromOffset(x + w * 0.5 - entry.detailLabel.Size.X.Offset * 0.5, maxY + 2)
-		else
+		if entry.detailText ~= "" then
+			local detH = settings.textSize + 2
+			local detW = w + 100
+			if detW < 140 then
+				detW = 140
+			end
+			local detSize = settings.textSize - 2
+			if detSize < 10 then
+				detSize = 10
+			end
+			if not entry.detailLabel.Visible then
+				entry.detailLabel.Visible = true
+			end
+			if entry.detailLabel.Text ~= entry.detailText then
+				entry.detailLabel.Text = entry.detailText
+			end
+			if entry.detailLabel.TextSize ~= detSize then
+				entry.detailLabel.TextSize = detSize
+			end
+			if rectChanged or needTextRebuild then
+				entry.detailLabel.Size = UDim2.fromOffset(detW, detH)
+				entry.detailLabel.Position = UDim2.fromOffset(x + w * 0.5 - detW * 0.5, maxY + 2)
+			end
+		elseif entry.detailLabel.Visible then
 			entry.detailLabel.Visible = false
 		end
 
-		if flag("Gakuran ESP Highlight", false) then
-			entry.highlight.Enabled = true
-			entry.highlight.Adornee = character
-			entry.highlight.FillColor = color
-			entry.highlight.OutlineColor = color
-		else
+		-- Highlight is expensive — only when enabled
+		if settings.highlight then
+			if not entry.highlight.Enabled then
+				entry.highlight.Enabled = true
+			end
+			if entry.highlight.Adornee ~= character then
+				entry.highlight.Adornee = character
+			end
+			if entry.highlight.FillColor ~= color then
+				entry.highlight.FillColor = color
+				entry.highlight.OutlineColor = color
+			end
+		elseif entry.highlight.Enabled then
 			entry.highlight.Enabled = false
 			entry.highlight.Adornee = nil
 		end
+
+		return true
 	end
 
 	local function clearAll()
@@ -736,17 +953,46 @@ return function(ctx)
 
 	local function setup()
 		local statusAccum = 0
+		local playersFolderCache = nil
+		local playersFolderAt = 0
+		local pruneAccum = 0
+		-- Reused settings table — no alloc per frame
+		local settings = {
+			showSelf = false,
+			boxes = true,
+			filled = false,
+			hpBar = true,
+			stmBar = true,
+			highlight = false,
+			names = true,
+			realNames = false,
+			distance = true,
+			style = true,
+			grade = true,
+			age = false,
+			height = false,
+			color = ACCENT,
+			nameColor = WHITE,
+			textSize = 13,
+			thickness = 2,
+			fillTransparency = 0.86,
+			maxDistSq = 600 * 600,
+			camRightX = 1,
+			camRightY = 0,
+			camRightZ = 0,
+		}
 
 		ctx.addConnection(Players.PlayerRemoving, function(player)
 			destroyEntry(player)
 		end)
 
+		-- RenderStepped = same cadence as camera (no tick lag / stutter)
 		ctx.addConnection(RunService.RenderStepped, function(dt)
 			if ctx.state.unloading then
 				return
 			end
 
-			if not flag("Gakuran Player ESP", false) then
+			if library.flags["Gakuran Player ESP"] ~= true then
 				if next(espState.entries) then
 					clearAll()
 				end
@@ -758,40 +1004,82 @@ return function(ctx)
 				return
 			end
 
+			local now = os.clock()
+			dt = tonumber(dt) or 0
+
+			-- Flags once/frame
+			settings.showSelf = library.flags["Gakuran ESP Show Self"] == true
+			settings.boxes = library.flags["Gakuran ESP Boxes"] ~= false
+			settings.filled = library.flags["Gakuran ESP Filled Boxes"] == true
+			settings.hpBar = library.flags["Gakuran ESP Health Bar"] ~= false
+			settings.stmBar = library.flags["Gakuran ESP Stamina Bar"] ~= false
+			settings.highlight = library.flags["Gakuran ESP Highlight"] == true
+			settings.names = library.flags["Gakuran ESP Names"] ~= false
+			settings.realNames = library.flags["Gakuran ESP Real Names"] == true
+			settings.distance = library.flags["Gakuran ESP Distance"] ~= false
+			settings.style = library.flags["Gakuran ESP Combat Style"] ~= false
+			settings.grade = library.flags["Gakuran ESP Grade"] ~= false
+			settings.age = library.flags["Gakuran ESP Age"] == true
+			settings.height = library.flags["Gakuran ESP Height"] == true
+			local c = library.flags["Gakuran ESP Color"]
+			settings.color = (typeof(c) == "Color3") and c or ACCENT
+			local nc = library.flags["Gakuran ESP Name Color"]
+			settings.nameColor = (typeof(nc) == "Color3") and nc or WHITE
+			settings.textSize = tonumber(library.flags["Gakuran ESP Text Size"]) or 13
+			settings.thickness = tonumber(library.flags["Gakuran ESP Box Thickness"]) or 2
+			local fillOp = (tonumber(library.flags["Gakuran ESP Fill Opacity"]) or 14) / 100
+			local ft = 1 - fillOp
+			if ft < 0.4 then
+				ft = 0.4
+			elseif ft > 1 then
+				ft = 1
+			end
+			settings.fillTransparency = ft
+			local maxDist = tonumber(library.flags["Gakuran ESP Max Distance"]) or 600
+			settings.maxDistSq = maxDist * maxDist
+
+			local right = camera.CFrame.RightVector
+			settings.camRightX = right.X
+			settings.camRightY = right.Y
+			settings.camRightZ = right.Z
+
+			-- Cache Workspace.Players ~2/s
+			if not playersFolderCache or (now - playersFolderAt) > 0.5 then
+				playersFolderCache = Workspace:FindFirstChild("Players")
+				playersFolderAt = now
+			end
+
 			local localChar = LocalPlayer.Character
 			local localRoot = localChar and (
 				localChar:FindFirstChild("HumanoidRootPart")
-				or localChar:FindFirstChild("Torso")
-				or localChar:FindFirstChild("UpperTorso")
 				or localChar.PrimaryPart
 			)
 
 			local drawn = 0
-			for _, player in ipairs(Players:GetPlayers()) do
-				local ok, err = pcall(updatePlayer, player, camera, localRoot)
-				if not ok then
-					-- keep going
-				else
-					local entry = espState.entries[player]
-					if entry and entry.box and entry.box.Visible then
-						drawn = drawn + 1
-					elseif entry and entry.nameLabel and entry.nameLabel.Visible then
-						drawn = drawn + 1
+			local list = Players:GetPlayers()
+			for i = 1, #list do
+				local player = list[i]
+				local ok, result = pcall(updatePlayer, player, camera, localRoot, playersFolderCache, settings, now)
+				if ok and result then
+					drawn = drawn + 1
+				end
+			end
+
+			-- Prune rare (not every frame)
+			pruneAccum = pruneAccum + dt
+			if pruneAccum >= 1.5 then
+				pruneAccum = 0
+				for player in pairs(espState.entries) do
+					if not player.Parent then
+						destroyEntry(player)
 					end
 				end
 			end
 
-			-- prune disconnected
-			for player in pairs(espState.entries) do
-				if not player.Parent then
-					destroyEntry(player)
-				end
-			end
-
-			statusAccum = statusAccum + (tonumber(dt) or 0)
+			statusAccum = statusAccum + dt
 			if statusAccum >= 1 then
 				statusAccum = 0
-				setStatus(string.format("drawing %d players", drawn))
+				setStatus(string.format("drawing %d · full-rate", drawn))
 			end
 		end)
 
