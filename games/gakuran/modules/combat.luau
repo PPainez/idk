@@ -153,13 +153,13 @@ return function(ctx)
 		text = "M2 Dodge Early",
 		flag = "Gakuran M2 Dodge Early",
 		min = 0,
-		max = 250,
-		value = 110,
+		max = 350,
+		value = 200,
 		float = 5,
 		suffix = " ms",
-		tip = "How early before M2 hitbox to dash (higher = safer escape)",
+		tip = "How early before M2 hitbox to dash (higher = safer). Capoeira table kick needs ~200ms+",
 	})
-	dodge:AddLabel("M2: dodge then parry fallback · Capoeira spin uses 320ms window")
+	dodge:AddLabel("M2: dodge then parry · Capoeira spin dodges ~200ms early")
 
 	local viz = columns.combatLeft:AddSection("Combat Visualizer")
 	viz:AddToggle({
@@ -1340,6 +1340,7 @@ return function(ctx)
 					window = math.clamp(sc.M2HitboxDuration, 0.12, 0.45)
 				end
 			end
+			-- Capoeira table-kick spin (live len≈1.88s)
 			if tostring(dbEntry.id) == "131071815103338" then
 				hitDelay = 0.45
 				window = 0.32
@@ -1382,11 +1383,22 @@ return function(ctx)
 		-- Aim for start of perfect window (hit - window*0.35), not after contact.
 		local waitTime
 		local dodgeM2Flag = flag("Gakuran Dodge M2", false)
+		local isCapoeiraM2 = tostring(dbEntry.id) == "131071815103338"
 		if m2Attack and dodgeM2Flag then
-			local early = numFlag("Gakuran M2 Dodge Early", 110) / 1000
+			-- Capoeira table kick needs more lead time (long windup, wide hit)
+			local early = numFlag("Gakuran M2 Dodge Early", 200) / 1000
+			if isCapoeiraM2 then
+				early = math.max(early, 0.22) -- at least 220ms early
+			elseif hitDelay >= 0.4 then
+				early = math.max(early, hitDelay * 0.4)
+			end
 			waitTime = math.max(0, hitDelay - early - pingComp - elapsed)
 		else
 			local contact = hitDelay - (window * 0.35) - pingComp + reaction
+			-- Capoeira M2 parry also a bit early into the long active frames
+			if isCapoeiraM2 then
+				contact = hitDelay - (window * 0.5) - pingComp + reaction
+			end
 			waitTime = contact - elapsed
 			if waitTime < 0 then
 				-- Still hittable if within active hitbox (or slightly after for lag)

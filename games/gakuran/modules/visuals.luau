@@ -404,42 +404,105 @@ return function(ctx)
 			and character:FindFirstChild("UpperTorso") == nil
 	end
 
-	local function getCharacterBounds(camera, character, rootPart)
-		-- R6 boxes are narrower/shorter than R15.
+	-- WorldToViewportPoint → overlay-local coords.
+	-- xanhub ScreenGui uses IgnoreGuiInset=true and sits at AbsolutePosition (0, -insetY).
+	-- Using raw viewport pixels as offsets is wrong under shift-lock / inset GUIs.
+	-- Correct: offset = viewportPoint - overlay.AbsolutePosition.
+	local function worldToOverlay(camera, worldPos, overlay)
+		local sp, onScreen = camera:WorldToViewportPoint(worldPos)
+		if sp.Z <= 0.05 then
+			return nil, nil, false, sp.Z
+		end
+		local originX, originY = 0, 0
+		if overlay then
+			local abs = overlay.AbsolutePosition
+			originX = abs.X
+			originY = abs.Y
+		end
+		return sp.X - originX, sp.Y - originY, onScreen, sp.Z
+	end
+
+	local function getCharacterBounds(camera, character, rootPart, overlay)
+		-- Prefer part bounds when possible (shift-lock skews camera-right billboard boxes)
+		local parts = {}
+		local hum = character:FindFirstChildOfClass("Humanoid")
 		local r6 = isR6(character)
-		local width = r6 and 2.2 or 3.1
-		local height = r6 and 5.0 or 5.6
-		local offsetY = r6 and 0.15 or 0.35
-		local center = rootPart.Position + Vector3.new(0, offsetY, 0)
-		local worldUp = Vector3.new(0, height * 0.5, 0)
-		local cameraRight = camera.CFrame.RightVector * (width * 0.5)
-		local points = {
-			center + worldUp - cameraRight,
-			center + worldUp + cameraRight,
-			center - worldUp - cameraRight,
-			center - worldUp + cameraRight,
-		}
+		if r6 then
+			for _, name in ipairs({ "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "HumanoidRootPart" }) do
+				local p = character:FindFirstChild(name)
+				if p and p:IsA("BasePart") then
+					parts[#parts + 1] = p
+				end
+			end
+		else
+			for _, name in ipairs({
+				"Head",
+				"UpperTorso",
+				"LowerTorso",
+				"LeftUpperArm",
+				"RightUpperArm",
+				"LeftUpperLeg",
+				"RightUpperLeg",
+				"HumanoidRootPart",
+			}) do
+				local p = character:FindFirstChild(name)
+				if p and p:IsA("BasePart") then
+					parts[#parts + 1] = p
+				end
+			end
+		end
 
 		local minX, minY = math.huge, math.huge
 		local maxX, maxY = -math.huge, -math.huge
-		for _, world in ipairs(points) do
-			local sp, onScreen = camera:WorldToViewportPoint(world)
-			if sp.Z <= 0.05 then
-				return nil
+		local any = false
+
+		local function accumWorld(world)
+			local x, y, _, z = worldToOverlay(camera, world, overlay)
+			if not x or z <= 0.05 then
+				return false
 			end
-			minX = math.min(minX, sp.X)
-			minY = math.min(minY, sp.Y)
-			maxX = math.max(maxX, sp.X)
-			maxY = math.max(maxY, sp.Y)
-			if not onScreen and (sp.X < -200 or sp.Y < -200 or sp.X > camera.ViewportSize.X + 200) then
-				-- still allow near-edge drawing
-			end
+			minX = math.min(minX, x)
+			minY = math.min(minY, y)
+			maxX = math.max(maxX, x)
+			maxY = math.max(maxY, y)
+			any = true
+			return true
 		end
 
-		if maxX <= minX or maxY <= minY then
+		if #parts > 0 then
+			for _, part in ipairs(parts) do
+				local cf, size = part.CFrame, part.Size
+				local sx, sy, sz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+				-- 8 corners of each part
+				for _, ox in ipairs({ -sx, sx }) do
+					for _, oy in ipairs({ -sy, sy }) do
+						for _, oz in ipairs({ -sz, sz }) do
+							accumWorld((cf * CFrame.new(ox, oy, oz)).Position)
+						end
+					end
+				end
+			end
+		else
+			-- Fallback billboard box around HRP
+			local width = r6 and 2.2 or 3.1
+			local height = r6 and 5.0 or 5.6
+			local offsetY = r6 and 0.15 or 0.35
+			local center = rootPart.Position + Vector3.new(0, offsetY, 0)
+			local worldUp = Vector3.new(0, height * 0.5, 0)
+			local cameraRight = camera.CFrame.RightVector * (width * 0.5)
+			accumWorld(center + worldUp - cameraRight)
+			accumWorld(center + worldUp + cameraRight)
+			accumWorld(center - worldUp - cameraRight)
+			accumWorld(center - worldUp + cameraRight)
+		end
+
+		if not any or maxX <= minX or maxY <= minY then
 			return nil
 		end
-		return minX, minY, maxX, maxY
+
+		-- Small padding so labels sit cleanly outside the body
+		local pad = 2
+		return minX - pad, minY - pad, maxX + pad, maxY + pad
 	end
 
 	local function healthColor(ratio)
@@ -460,7 +523,15 @@ return function(ctx)
 			return
 		end
 
+		-- Gakuran characters live under Workspace.Players (same instance as Character usually)
 		local character = player.Character
+		local folder = Workspace:FindFirstChild("Players")
+		if folder then
+			local named = folder:FindFirstChild(player.Name)
+			if named and named:FindFirstChildOfClass("Humanoid") then
+				character = named
+			end
+		end
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		local rootPart = character and (
 			character:FindFirstChild("HumanoidRootPart")
@@ -487,17 +558,16 @@ return function(ctx)
 			return
 		end
 
-		local minX, minY, maxX, maxY = getCharacterBounds(camera, character, rootPart)
-		if not minX then
-			local entry = espState.entries[player]
-			if entry then
-				hideEntry(entry)
-			end
+		local entry = ensureEntry(player)
+		if not entry then
 			return
 		end
 
-		local entry = ensureEntry(player)
-		if not entry then
+		-- Project relative to this entry's overlay root (handles inset / shift-lock)
+		local overlay = entry.root
+		local minX, minY, maxX, maxY = getCharacterBounds(camera, character, rootPart, overlay)
+		if not minX then
+			hideEntry(entry)
 			return
 		end
 
