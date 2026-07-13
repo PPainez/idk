@@ -178,6 +178,7 @@ local featureNames = {}
 for _, modulePath in ipairs({
 	"games/gakuran/modules/combat.luau",
 	"games/gakuran/modules/visuals.luau",
+	"games/gakuran/modules/self_exploits.luau",
 	"games/gakuran/modules/rhythm.luau",
 	"games/gakuran/modules/basketball.luau",
 	"games/gakuran/modules/death_skip.luau",

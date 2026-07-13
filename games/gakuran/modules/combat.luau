@@ -1008,7 +1008,8 @@ return function(ctx)
 		karate = { 0.290, 0.327, 0.402, 0.477 },
 		kure = { 0.332, 0.332, 0.332, 0.332 },
 		muaythai = { 0.312, 0.312, 0.312, 0.312 },
-		slugger = { 0.512, 0.462, 0.462, 0.382 },
+		-- base 0.2 + offsets 0.30/0.25/0.25/0.17
+		slugger = { 0.50, 0.45, 0.45, 0.37 },
 		striker = { 0.332, 0.332, 0.332, 0.332 },
 		wrestling = { 0.332, 0.332, 0.332, 0.332 },
 	}
@@ -1107,9 +1108,46 @@ return function(ctx)
 		-- Prefer live CombatConfig scaled delay (base + per-step offset) / attackSpeed
 		local cfg = getCombatConfig()
 		if cfg and type(cfg.GetScaledStyleM1HitboxDelay) == "function" then
-			local ok, d = pcall(cfg.GetScaledStyleM1HitboxDelay, key, step, speed)
-			if ok and type(d) == "number" and d > 0.05 then
-				return d
+			-- Try common call shapes (module table / colon / with speed)
+			local candidates = {
+				function()
+					return cfg.GetScaledStyleM1HitboxDelay(key, step, speed)
+				end,
+				function()
+					return cfg:GetScaledStyleM1HitboxDelay(key, step, speed)
+				end,
+				function()
+					return cfg.GetScaledStyleM1HitboxDelay(key, step)
+				end,
+				function()
+					return cfg:GetScaledStyleM1HitboxDelay(key, step)
+				end,
+			}
+			for i = 1, #candidates do
+				local ok, d = pcall(candidates[i])
+				if ok and type(d) == "number" and d > 0.05 then
+					return math.max(0.08, d / (speed > 0.05 and speed or 1))
+				end
+			end
+		end
+
+		-- Manual base+offset from GetStyleConfig when scaled helper fails
+		if cfg and type(cfg.GetStyleConfig) == "function" then
+			local ok, sc = pcall(cfg.GetStyleConfig, key)
+			if not ok then
+				ok, sc = pcall(function()
+					return cfg:GetStyleConfig(key)
+				end)
+			end
+			if ok and type(sc) == "table" then
+				local base = tonumber(sc.M1HitboxDelay) or 0
+				local off = 0
+				if type(sc.M1HitboxDelayOffsets) == "table" then
+					off = tonumber(sc.M1HitboxDelayOffsets[step] or sc.M1HitboxDelayOffsets[tostring(step)]) or 0
+				end
+				if base > 0 then
+					return math.max(0.08, (base + off) / speed)
+				end
 			end
 		end
 

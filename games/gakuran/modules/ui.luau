@@ -10,9 +10,10 @@ return function(ctx)
 	local homeTab = library:AddTab("Home", 1)
 	local combatTab = library:AddTab("Combat", 2)
 	local visualsTab = library:AddTab("Visuals", 3)
-	local rhythmTab = library:AddTab("Rhythm", 4)
-	local basketballTab = library:AddTab("Basketball", 5)
-	local parryTab = library:AddTab("Parry Builder", 6)
+	local selfTab = library:AddTab("Self", 4)
+	local rhythmTab = library:AddTab("Rhythm", 5)
+	local basketballTab = library:AddTab("Basketball", 6)
+	local parryTab = library:AddTab("Parry Builder", 7)
 
 	local columns = {
 		homeLeft = homeTab:AddColumn(),
@@ -21,6 +22,8 @@ return function(ctx)
 		combatRight = combatTab:AddColumn(),
 		visualsLeft = visualsTab:AddColumn(),
 		visualsRight = visualsTab:AddColumn(),
+		selfLeft = selfTab:AddColumn(),
+		selfRight = selfTab:AddColumn(),
 		rhythmLeft = rhythmTab:AddColumn(),
 		rhythmRight = rhythmTab:AddColumn(),
 		basketballLeft = basketballTab:AddColumn(),
@@ -37,6 +40,7 @@ return function(ctx)
 	intro:AddDivider("Modules")
 	intro:AddLabel("Combat — auto parry · rear dodge · attack DB")
 	intro:AddLabel("Visuals — name/style/grade/stamina ESP")
+	intro:AddLabel("Self — stamina · stun · dodge/parry CD · ragdoll")
 	intro:AddLabel("Rhythm — humanized auto-play (all instruments)")
 	intro:AddLabel("Basketball — green release · rim/ball ESP")
 	intro:AddLabel("Parry Builder — animation profiles for AP")
@@ -100,6 +104,7 @@ return function(ctx)
 			home = homeTab,
 			combat = combatTab,
 			visuals = visualsTab,
+			self = selfTab,
 			rhythm = rhythmTab,
 			basketball = basketballTab,
 			parry = parryTab,

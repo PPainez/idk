@@ -302,12 +302,18 @@ local SEED = {
 	["104515319350296"] = { name = "3rdM1", kind = "M1", hitDelay = 0.312, window = 0.125 },
 	["74960202100098"] = { name = "4thM1", kind = "M1", hitDelay = 0.312, window = 0.125 },
 	["137034747040618"] = { name = "M2", kind = "M2", hitDelay = 0.60, window = 0.125 },
-	-- Slugger (scaled 512/462/462/382 — 1st is very slow)
-	["134829666925953"] = { name = "1stM1", kind = "M1", hitDelay = 0.512, window = 0.125 },
-	["104867156139010"] = { name = "2ndM1", kind = "M1", hitDelay = 0.462, window = 0.125 },
-	["112759168172605"] = { name = "3rdM1", kind = "M1", hitDelay = 0.462, window = 0.125 },
-	["114647502301740"] = { name = "4thM1", kind = "M1", hitDelay = 0.382, window = 0.125 },
-	["118943955490014"] = { name = "M2", kind = "M2", hitDelay = 0.82, window = 0.125 },
+	-- Slugger (CombatConfig: M1 base 0.2 + offsets 0.30/0.25/0.25/0.17 → 0.50/0.45/0.45/0.37; M2 0.82)
+	["134829666925953"] = { name = "1stM1", kind = "M1", hitDelay = 0.50, window = 0.130 },
+	["104867156139010"] = { name = "2ndM1", kind = "M1", hitDelay = 0.45, window = 0.130 },
+	["112759168172605"] = { name = "3rdM1", kind = "M1", hitDelay = 0.45, window = 0.130 },
+	["114647502301740"] = { name = "4thM1", kind = "M1", hitDelay = 0.37, window = 0.130 },
+	["118943955490014"] = { name = "M2", kind = "M2", hitDelay = 0.82, window = 0.140 },
+	-- Slugger EHits (shared folder IDs with base/karate — keep as EHit)
+	["108045962864902"] = { name = "1stEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["90752347516770"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["122541287927198"] = { name = "3rdEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["101347661150789"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["74690341409113"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.35, window = 0.130 },
 	-- Striker
 	["127909081017342"] = { name = "1stM1", kind = "M1", hitDelay = 0.332, window = 0.125 },
 	["132840225082238"] = { name = "1stM1", kind = "M1", hitDelay = 0.332, window = 0.125 },
@@ -530,7 +536,94 @@ function AttackDB.create()
 		-- Never blackhole real seed attacks if a folder also tagged them as loco by mistake.
 		for id in pairs(SEED) do
 			LOCOMOTION_IDS[id] = nil
+			-- Re-apply seed timing so live harvest can't soft-overwrite with classify() defaults
+			local seed = SEED[id]
+			local entry = self.byId[id]
+			if seed and entry then
+				entry.hitDelay = seed.hitDelay
+				entry.window = seed.window or entry.window or 0.125
+				entry.kind = seed.kind or entry.kind
+				if seed.name then
+					entry.name = seed.name
+				end
+			end
 		end
+
+		-- Prefer CombatConfig style delays when available (slugger etc.)
+		pcall(function()
+			local cfg = require(game:GetService("ReplicatedStorage").Shared.Config.CombatConfig)
+			if type(cfg) ~= "table" then
+				return
+			end
+			local anims = game:GetService("ReplicatedStorage"):FindFirstChild("Animations")
+			local combat = anims and anims:FindFirstChild("Combat")
+			if not combat then
+				return
+			end
+			local folderToStyle = {
+				SluggerAnims = "slugger",
+				BoxingAnims = "boxing",
+				BasicAnims = "basic",
+				CapoeiraAnims = "capoeira",
+				KarateAnims = "karate",
+				KureAnims = "kure",
+				MuayThaiAnims = "muaythai",
+				WrestlingAnims = "wrestling",
+				HakariAnims = "hakari",
+				HakariOtherAnims = "hakari",
+				StrikerAnims = "wild",
+			}
+			for folderName, styleKey in pairs(folderToStyle) do
+				local folder = combat:FindFirstChild(folderName)
+				if folder then
+					local baseM1 = 0.32
+					local m2Delay = 0.45
+					pcall(function()
+						local sc = cfg.GetStyleConfig and cfg.GetStyleConfig(styleKey)
+						if type(sc) == "table" then
+							baseM1 = tonumber(sc.M1HitboxDelay) or baseM1
+							m2Delay = tonumber(sc.M2HitboxDelay) or m2Delay
+						end
+					end)
+					local offsets = { 0, 0, 0, 0 }
+					pcall(function()
+						local sc = cfg.GetStyleConfig and cfg.GetStyleConfig(styleKey)
+						local off = sc and sc.M1HitboxDelayOffsets
+						if type(off) == "table" then
+							for i = 1, 4 do
+								offsets[i] = tonumber(off[i] or off[tostring(i)]) or 0
+							end
+						end
+					end)
+					for _, d in ipairs(folder:GetDescendants()) do
+						if d:IsA("Animation") then
+							local id = AttackDB.extractId(d.AnimationId)
+							local entry = id and self.byId[id]
+							local n = d.Name
+							if entry and n then
+								if n:find("M2") and not n:find("EHit") then
+									entry.hitDelay = m2Delay
+									entry.kind = "M2"
+								elseif n:find("1stM1") then
+									entry.hitDelay = baseM1 + offsets[1]
+									entry.kind = "M1"
+								elseif n:find("2ndM1") then
+									entry.hitDelay = baseM1 + offsets[2]
+									entry.kind = "M1"
+								elseif n:find("3rdM1") then
+									entry.hitDelay = baseM1 + offsets[3]
+									entry.kind = "M1"
+								elseif n:find("4thM1") then
+									entry.hitDelay = baseM1 + offsets[4]
+									entry.kind = "M1"
+								end
+								entry.styles[styleKey] = true
+							end
+						end
+					end
+				end
+			end
+		end)
 
 		local n = 0
 		for _ in pairs(self.byId) do
