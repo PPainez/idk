@@ -12,7 +12,7 @@ return function(ctx)
 	local visualsTab = library:AddTab("Visuals", 3)
 	local selfTab = library:AddTab("Self", 4)
 	local rhythmTab = library:AddTab("Rhythm", 5)
-	local basketballTab = library:AddTab("Basketball", 6)
+	local qolTab = library:AddTab("QOL", 6)
 	local parryTab = library:AddTab("Parry Builder", 7)
 
 	local columns = {
@@ -26,11 +26,14 @@ return function(ctx)
 		selfRight = selfTab:AddColumn(),
 		rhythmLeft = rhythmTab:AddColumn(),
 		rhythmRight = rhythmTab:AddColumn(),
-		basketballLeft = basketballTab:AddColumn(),
-		basketballRight = basketballTab:AddColumn(),
+		qolLeft = qolTab:AddColumn(),
+		qolRight = qolTab:AddColumn(),
 		parryLeft = parryTab:AddColumn(),
 		parryRight = parryTab:AddColumn(),
 	}
+	-- Back-compat aliases (basketball module / older hooks)
+	columns.basketballLeft = columns.qolLeft
+	columns.basketballRight = columns.qolRight
 
 	local intro = columns.homeLeft:AddSection("xanhub Gakuran")
 	intro:AddLabel("Game: (学乱) Gakuran")
@@ -42,8 +45,9 @@ return function(ctx)
 	intro:AddLabel("Visuals — name/style/grade/stamina ESP")
 	intro:AddLabel("Self — stamina · stun · dodge/parry CD · ragdoll")
 	intro:AddLabel("Rhythm — humanized auto-play (all instruments)")
-	intro:AddLabel("Basketball — green release · rim/ball ESP")
+	intro:AddLabel("QOL — basketball · lighting · FOV · zoom · AFK")
 	intro:AddLabel("Parry Builder — animation profiles for AP")
+	intro:AddLabel("Settings → Configs: place-scoped autoload")
 
 	local quick = columns.homeRight:AddSection("Quick Actions")
 	quick:AddButton({
@@ -69,6 +73,30 @@ return function(ctx)
 				pcall(function()
 					ctx.TeleportService:Teleport(game.PlaceId, ctx.LocalPlayer)
 				end)
+			end
+		end,
+	})
+	quick:AddButton({
+		text = "Save + Autoload Cfg (this place)",
+		callback = function()
+			if type(library.SetAutoloadConfig) ~= "function" then
+				ctx.notify("Config API missing", 3)
+				return
+			end
+			local name = library:ResolveConfigName(library.flags["Config List"] or library.flags["Config Name"])
+			if not name or name == "" then
+				name = "gakuran"
+			end
+			if not table.find(library:GetConfigs(), name) then
+				library:CreateConfig(name)
+			end
+			if library:SaveConfig(name) and library:SetAutoloadConfig(name) then
+				ctx.notify("Saved + autoload '" .. name .. "' @ " .. tostring(game.PlaceId), 3)
+			else
+				ctx.notify("Save/autoload failed", 3)
+			end
+			if library.UpdateAutoloadLabel then
+				library:UpdateAutoloadLabel()
 			end
 		end,
 	})
@@ -106,7 +134,8 @@ return function(ctx)
 			visuals = visualsTab,
 			self = selfTab,
 			rhythm = rhythmTab,
-			basketball = basketballTab,
+			qol = qolTab,
+			basketball = qolTab, -- alias
 			parry = parryTab,
 		},
 		columns = columns,

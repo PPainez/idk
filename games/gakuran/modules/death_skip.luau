@@ -28,7 +28,9 @@ return function(ctx)
 	st.lastSkipAt = 0
 	st.controller = nil
 
-	local section = columns.homeRight:AddSection("Death")
+	-- Prefer QOL tab; fall back to Home for older layouts
+	local host = (columns.qolRight or columns.qolLeft or columns.homeRight)
+	local section = host:AddSection("Death")
 	section:AddToggle({
 		text = "Skip Death Screen",
 		flag = "Gakuran Skip Death",

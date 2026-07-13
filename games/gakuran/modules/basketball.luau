@@ -21,9 +21,12 @@ return function(ctx)
 	local METER_DURATION = 0.6578947368421053
 	local PERFECT_PROGRESS = 0.76
 
-	-- UI -----------------------------------------------------------------
+	-- UI — lives under QOL tab as its own Basketball section -----------------
 
-	local shoot = columns.basketballLeft:AddSection("Shooting")
+	local leftCol = columns.qolLeft or columns.basketballLeft
+	local rightCol = columns.qolRight or columns.basketballRight
+
+	local shoot = leftCol:AddSection("Basketball")
 	shoot:AddToggle({
 		text = "Auto Green Release",
 		flag = "Gakuran Basketball Auto Release",
@@ -46,14 +49,14 @@ return function(ctx)
 		suffix = " ms",
 		tip = "Shift release earlier (-) or later (+) around the green center",
 	})
-	shoot:AddLabel("Hold F · releases on perfect window · no getgc")
+	shoot:AddLabel("Hold F · perfect window · basketball lives under QOL")
 
-	local espSection = columns.basketballRight:AddSection("Basketball ESP")
+	local espSection = rightCol:AddSection("Basketball ESP")
 	espSection:AddToggle({ text = "Basketball ESP", flag = "Gakuran Basketball ESP", state = false })
 	espSection:AddToggle({ text = "Show Rims", flag = "Gakuran Basketball ESP Rims", state = true })
 	espSection:AddToggle({ text = "Show Balls", flag = "Gakuran Basketball ESP Balls", state = true })
 
-	local debugSection = columns.basketballRight:AddSection("Debug")
+	local debugSection = rightCol:AddSection("Basketball Status")
 	debugSection:AddToggle({ text = "Basketball Debug Logs", flag = "Gakuran Basketball Debug", state = false })
 	ctx.refs.basketballStatus = debugSection:AddLabel("Status: idle")
 

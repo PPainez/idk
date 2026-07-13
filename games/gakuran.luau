@@ -2,7 +2,7 @@
     xanhub | Gakuran
 
     Featured edition for (学乱) Gakuran.
-    Combat · Visuals ESP · Rhythm · Basketball · Skip Death · Parry Builder · DevTools
+    Combat · Visuals ESP · Self · Rhythm · QOL (basketball + util) · Parry Builder · DevTools
 ]]
 
 local GAKURAN_PLACE_ID = 128736949265057
@@ -180,6 +180,7 @@ for _, modulePath in ipairs({
 	"games/gakuran/modules/visuals.luau",
 	"games/gakuran/modules/self_exploits.luau",
 	"games/gakuran/modules/rhythm.luau",
+	"games/gakuran/modules/qol.luau",
 	"games/gakuran/modules/basketball.luau",
 	"games/gakuran/modules/death_skip.luau",
 }) do
@@ -267,6 +268,13 @@ task.defer(function()
 			and ("Status: ready · " .. #featureNames .. " features live")
 			or "Status: wrong place — some features may misbehave"
 	end
+
+	-- Re-apply place autoload after feature setups (toggles exist + runtimes wired)
+	pcall(function()
+		if library.TryAutoloadConfig then
+			library:TryAutoloadConfig()
+		end
+	end)
 
 	pcall(function()
 		ctx.notify(detected and "xanhub Gakuran ready" or "xanhub Gakuran loaded (place mismatch)", 3)

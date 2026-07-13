@@ -572,12 +572,19 @@
 		return configs
 	end
 
-	function library:GetAutoloadConfig()
+	-- Place-scoped autoload: only applies when PlaceId matches the saved game.
+	function library:GetAutoloadPath(placeId)
+		placeId = tonumber(placeId) or game.PlaceId
+		return self.foldername .. "/autoload_" .. tostring(placeId) .. ".txt"
+	end
+
+	function library:GetAutoloadConfig(placeId)
 		if not self.capabilities.filesystem then
 			return nil
 		end
 
-		local path = self.foldername .. "/autoload.txt"
+		placeId = tonumber(placeId) or game.PlaceId
+		local path = self:GetAutoloadPath(placeId)
 		local ok, name = pcall(function()
 			if not isfile(path) then
 				return nil
@@ -590,7 +597,7 @@
 		return ok and name or nil
 	end
 
-	function library:SetAutoloadConfig(config)
+	function library:SetAutoloadConfig(config, placeId)
 		if not self.capabilities.filesystem then
 			return false, "filesystem unavailable"
 		end
@@ -603,26 +610,40 @@
 			return false, "config does not exist"
 		end
 
+		placeId = tonumber(placeId) or game.PlaceId
+		local path = self:GetAutoloadPath(placeId)
 		local ok, err = pcall(function()
 			if not isfolder(self.foldername) then
 				makefolder(self.foldername)
 			end
-			writefile(self.foldername .. "/autoload.txt", config)
+			-- Store name only; path already encodes PlaceId so other games never load it.
+			writefile(path, config)
 		end)
+		if ok then
+			self:UpdateAutoloadLabel()
+		end
 		return ok, err
 	end
 
-	function library:ClearAutoloadConfig()
-		if not self.capabilities.deletefile then
+	function library:ClearAutoloadConfig(placeId)
+		if not self.capabilities.filesystem then
 			return false
 		end
 
-		local path = self.foldername .. "/autoload.txt"
+		placeId = tonumber(placeId) or game.PlaceId
+		local path = self:GetAutoloadPath(placeId)
 		local ok = pcall(function()
 			if isfile(path) then
-				delfile(path)
+				if self.capabilities.deletefile and type(delfile) == "function" then
+					delfile(path)
+				else
+					writefile(path, "")
+				end
 			end
 		end)
+		if ok then
+			self:UpdateAutoloadLabel()
+		end
 		return ok
 	end
 
@@ -632,11 +653,30 @@
 		end
 
 		local name = self:GetAutoloadConfig()
+		local place = tostring(game.PlaceId)
 		if name then
-			self.autoloadStatus.Text = "Auto load: " .. name
+			self.autoloadStatus.Text = "Auto load (place " .. place .. "): " .. name
 		else
-			self.autoloadStatus.Text = "Auto load: none"
+			self.autoloadStatus.Text = "Auto load: none for this place"
 		end
+	end
+
+	function library:TryAutoloadConfig()
+		if not self.capabilities.filesystem then
+			return false, "filesystem unavailable"
+		end
+		local name = self:GetAutoloadConfig()
+		if not name then
+			return false, "no autoload for this place"
+		end
+		local ok, result = self:LoadConfig(name)
+		if ok then
+			self:RefreshConfigList(name)
+			pcall(function()
+				self:SendNotification(2, "Autoloaded '" .. name .. "' for place " .. tostring(game.PlaceId))
+			end)
+		end
+		return ok, result
 	end
 
 	local function configToggleEnabled(saved)
@@ -3795,6 +3835,11 @@
 		self.ready = true
 		self:SetAccent(self.flags["Menu Accent Color"] or self.defaultAccent)
 		self:UpdateWindowLayout(self.currentTab)
+		-- Place-scoped autoload after all options exist (feature modules register before Init)
+		pcall(function()
+			self:UpdateAutoloadLabel()
+			self:TryAutoloadConfig()
+		end)
 		print("[xanhub " .. tostring(self.version) .. "] UI initialized | parent: " .. (self.uiParent and self.uiParent:GetFullName() or "unknown"))
 		return self
 	end
@@ -3888,6 +3933,54 @@
 				end
 			end
 		end})
+		library.ConfigSection:AddDivider("Place Autoload")
+		library.ConfigSection:AddLabel("Binds to this PlaceId only · other games ignore it")
+		library.autoloadStatus = library.ConfigSection:AddLabel("Auto load: —")
+		library:UpdateAutoloadLabel()
+		library.ConfigSection:AddButton({
+			text = "Save + Set Autoload (this place)",
+			callback = function()
+				local name = library:ResolveConfigName(library.flags["Config List"])
+				if name == "" then
+					library:SendNotification(2, "Select or create a config first")
+					return
+				end
+				if not table.find(library:GetConfigs(), name) then
+					library:CreateConfig(name)
+				end
+				local saveOk = library:SaveConfig(name)
+				if not saveOk then
+					library:SendNotification(3, "Save failed")
+					return
+				end
+				local ok, err = library:SetAutoloadConfig(name)
+				if ok then
+					library:SendNotification(2, "Autoload set for place " .. tostring(game.PlaceId) .. ": " .. name)
+				else
+					library:SendNotification(3, "Autoload failed: " .. tostring(err))
+				end
+				library:UpdateAutoloadLabel()
+			end,
+		})
+		library.ConfigSection:AddButton({
+			text = "Set Selected as Autoload",
+			callback = function()
+				local name = library:ResolveConfigName(library.flags["Config List"])
+				local ok, err = library:SetAutoloadConfig(name)
+				if ok then
+					library:SendNotification(2, "Autoload → " .. name .. " @ " .. tostring(game.PlaceId))
+				else
+					library:SendNotification(3, tostring(err or "failed"))
+				end
+			end,
+		})
+		library.ConfigSection:AddButton({
+			text = "Clear Autoload (this place)",
+			callback = function()
+				library:ClearAutoloadConfig()
+				library:SendNotification(2, "Autoload cleared for this place")
+			end,
+		})
 	else
 		library.ConfigSection:AddLabel("Config saving is unavailable in this executor")
 	end
