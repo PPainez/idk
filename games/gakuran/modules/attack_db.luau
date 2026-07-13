@@ -58,6 +58,8 @@ local LOCOMOTION_IDS = {
 	["100542767551399"] = true, -- Striker Idle
 	["108636808436488"] = true, -- Hakari Idle
 	["108862846290180"] = true, -- Capoeira Idle
+	["85845666927963"] = true, -- Capoeira Walk (live scan)
+	["79974955602012"] = true, -- Slugger Walk
 	["115351567178592"] = true, -- HakariOther Idle
 	["113694931951279"] = true, -- Base Idle
 	-- Block / non-offensive combat
@@ -264,7 +266,8 @@ local SEED = {
 	["134945199381140"] = { name = "2ndM1", kind = "M1", hitDelay = 0.442, window = 0.125 },
 	["117877243065533"] = { name = "3rdM1", kind = "M1", hitDelay = 0.362, window = 0.125 },
 	["106965238908791"] = { name = "4thM1", kind = "M1", hitDelay = 0.292, window = 0.125 },
-	["131071815103338"] = { name = "M2", kind = "M2", hitDelay = 0.45, window = 0.125 },
+	-- Capoeira M2 spin/table kick — live: len≈1.88s, M2HitboxDelay=0.45, M2HitboxDuration=0.32
+	["131071815103338"] = { name = "M2", kind = "M2", hitDelay = 0.45, window = 0.32, style = "capoeira" },
 	-- Capoeira Idle/Walk/Block also blacklisted via harvest
 	-- Hakari (scaled 452/472/452/502)
 	["76236532060812"] = { name = "1stM1", kind = "M1", hitDelay = 0.452, window = 0.125 },

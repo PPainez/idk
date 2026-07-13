@@ -154,12 +154,12 @@ return function(ctx)
 		flag = "Gakuran M2 Dodge Early",
 		min = 0,
 		max = 250,
-		value = 90,
+		value = 110,
 		float = 5,
 		suffix = " ms",
 		tip = "How early before M2 hitbox to dash (higher = safer escape)",
 	})
-	dodge:AddLabel("Front → parry · rear → dodge · M2 → back-dash")
+	dodge:AddLabel("M2: dodge then parry fallback · Capoeira spin uses 320ms window")
 
 	local viz = columns.combatLeft:AddSection("Combat Visualizer")
 	viz:AddToggle({
@@ -526,12 +526,13 @@ return function(ctx)
 		return nil
 	end
 
-	local function doParry(entry)
+	local function doParry(entry, opts)
+		opts = type(opts) == "table" and opts or {}
 		local blockApi = getBlockApi()
 		if not blockApi or type(blockApi.Block) ~= "function" then
 			debugLog("Block API missing")
 			setStatus("Block module not loaded")
-			return
+			return false
 		end
 
 		local character = getCharacter(LocalPlayer) or LocalPlayer.Character
@@ -542,7 +543,7 @@ return function(ctx)
 		if not ok then
 			debugLog("Block failed", err)
 			setStatus("parry failed")
-			return
+			return false
 		end
 
 		st.lastParryAt = os.clock()
@@ -563,13 +564,22 @@ return function(ctx)
 			entry._pingComp and " · ping-comp" or ""
 		), "combat-parry")
 
-		local hold = math.clamp(numFlag("Gakuran Parry Hold", 110), 40, 250) / 1000
+		-- M2 spin kicks need longer hold (Capoeira M2HitboxDuration≈0.32s)
+		local baseHold = math.clamp(numFlag("Gakuran Parry Hold", 110), 40, 350) / 1000
+		local m2Hold = tonumber(opts.holdSec)
+		local hold = baseHold
+		if m2Hold and m2Hold > hold then
+			hold = math.clamp(m2Hold, 0.08, 0.55)
+		elseif opts.isM2 then
+			hold = math.max(hold, 0.28)
+		end
 		task.delay(hold, function()
 			local unblock = getBlockApi()
 			if unblock and type(unblock.Unblock) == "function" then
 				pcall(unblock.Unblock)
 			end
 		end)
+		return true
 	end
 
 	local function combatFeaturesOn()
@@ -1092,11 +1102,27 @@ return function(ctx)
 		if kind == "M2" or name:find("M2", 1, true) or name:find("Crit", 1, true) then
 			local m2 = STYLE_M2[key] or STYLE_M2.default
 			local cfg = getCombatConfig()
+			-- Prefer style table (GetStyleM2HitboxDelay call shapes are inconsistent)
+			if cfg and type(cfg.GetStyleConfig) == "function" then
+				local ok, sc = pcall(cfg.GetStyleConfig, key)
+				if not ok then
+					ok, sc = pcall(function()
+						return cfg:GetStyleConfig(key)
+					end)
+				end
+				if ok and type(sc) == "table" and type(sc.M2HitboxDelay) == "number" then
+					m2 = sc.M2HitboxDelay
+				end
+			end
 			if cfg and type(cfg.GetStyleM2HitboxDelay) == "function" then
 				local ok, d = pcall(cfg.GetStyleM2HitboxDelay, key, name:find("Momentum", 1, true) ~= nil)
-				if ok and type(d) == "number" then
+				if ok and type(d) == "number" and d > 0.1 then
 					m2 = d
 				end
+			end
+			-- Capoeira spin kick id hard-confirm
+			if tostring(dbEntry and dbEntry.id) == "131071815103338" then
+				m2 = 0.45
 			end
 			return math.max(0.08, m2 / speed)
 		end
@@ -1292,14 +1318,33 @@ return function(ctx)
 		-- Contact = CombatConfig scaled hitbox delay for this style + combo step.
 		local hitDelay = styleHitDelay(attacker, dbEntry, track)
 		local window = tonumber(dbEntry.window) or 0.125
-		-- Hitbox duration ~0.15s (config); use that as perfect-block window default.
-		local cfg = getCombatConfig()
-		if cfg and cfg.M1 and type(cfg.M1.HitboxDuration) == "number" then
-			window = math.clamp(cfg.M1.HitboxDuration, 0.08, 0.2)
-		end
 		local range = numFlag("Gakuran Range Prefilter", 14)
 		local m2Attack = isM2Entry(dbEntry)
 		local hold = attackerHoldingM1(attacker) or opts.fromCombo == true
+		local styleKey = attackerStyleKey(attacker)
+		local cfg = getCombatConfig()
+
+		-- Hitbox duration: M1 default 0.15; Capoeira M2 uses 0.32 (style.M2HitboxDuration)
+		if m2Attack then
+			window = math.max(window, 0.22)
+			if cfg and type(cfg.GetStyleConfig) == "function" then
+				local ok, sc = pcall(cfg.GetStyleConfig, styleKey)
+				if not ok then
+					ok, sc = pcall(function()
+						return cfg:GetStyleConfig(styleKey)
+					end)
+				end
+				if ok and type(sc) == "table" and type(sc.M2HitboxDuration) == "number" then
+					window = math.clamp(sc.M2HitboxDuration, 0.12, 0.45)
+				end
+			end
+			if tostring(dbEntry.id) == "131071815103338" then
+				hitDelay = 0.45
+				window = 0.32
+			end
+		elseif cfg and cfg.M1 and type(cfg.M1.HitboxDuration) == "number" then
+			window = math.clamp(cfg.M1.HitboxDuration, 0.08, 0.22)
+		end
 
 		local profile = profileOverride(animId, dbEntry.name)
 		if profile then
@@ -1323,22 +1368,28 @@ return function(ctx)
 		elseif hold and elapsed > hitDelay * 0.55 then
 			-- Late replicate: aim for remaining hit window center, not full restart.
 			elapsed = hitDelay * 0.55
+		elseif m2Attack and elapsed > hitDelay * 0.65 and elapsed < hitDelay + window then
+			-- Late-seen M2 still inside active hitbox — block now
+			elapsed = hitDelay * 0.65
 		end
 
 		-- Reaction: positive = wait longer before block (tip-aligned). Default 15ms fine tune.
 		local reaction = numFlag("Gakuran Reaction Offset", 15) / 1000
 		local pingComp, pingMs = pingCompensationSeconds()
 
-		-- Aim for start of perfect window (hit - window*0.4), not after contact.
+		-- Aim for start of perfect window (hit - window*0.35), not after contact.
 		local waitTime
-		if m2Attack and flag("Gakuran Dodge M2", false) then
-			local early = numFlag("Gakuran M2 Dodge Early", 90) / 1000
+		local dodgeM2Flag = flag("Gakuran Dodge M2", false)
+		if m2Attack and dodgeM2Flag then
+			local early = numFlag("Gakuran M2 Dodge Early", 110) / 1000
 			waitTime = math.max(0, hitDelay - early - pingComp - elapsed)
 		else
-			local contact = hitDelay - (window * 0.4) - pingComp + reaction
+			local contact = hitDelay - (window * 0.35) - pingComp + reaction
 			waitTime = contact - elapsed
 			if waitTime < 0 then
-				if hold or elapsed <= hitDelay + window then
+				-- Still hittable if within active hitbox (or slightly after for lag)
+				local grace = m2Attack and (window + 0.12) or (window + 0.05)
+				if hold or elapsed <= hitDelay + grace then
 					waitTime = 0
 				else
 					st.pending[dedupe] = nil
@@ -1350,13 +1401,14 @@ return function(ctx)
 
 		if flag("Gakuran Combat Debug Logs", false) then
 			combatToast("debug", "Attack Seen", string.format(
-				"%s · %s · %s%s%s\ncontact %.0fms · wait %.0fms · el %.0fms · ping %.0fms%s",
+				"%s · %s · %s%s%s\ncontact %.0fms · win %.0fms · wait %.0fms · el %.0fms · ping %.0fms%s",
 				tostring(dbEntry.name or "?"),
 				tostring(dbEntry.kind or "?"),
 				tostring(attacker.Name),
 				hold and " · HOLD" or "",
 				opts.fromCombo and " · COMBO" or "",
 				hitDelay * 1000,
+				window * 1000,
 				waitTime * 1000,
 				elapsed * 1000,
 				pingMs,
@@ -1364,8 +1416,7 @@ return function(ctx)
 			), "combat-seen-" .. tostring(animId) .. "-" .. tostring(attackerCombo(attacker)))
 		end
 
-		task.delay(waitTime, function()
-			st.pending[dedupe] = nil
+		local function fireResponse(isRetap)
 			if ctx.state.unloading then
 				return
 			end
@@ -1377,10 +1428,9 @@ return function(ctx)
 				return
 			end
 
-			-- Soft cooldown — very low so held M1 strings (1st→4th) all parry.
 			local now = os.clock()
-			local holdCd = (attackerHoldingM1(attacker) or opts.fromCombo) and 0.025 or 0.045
-			if autoParry and (now - (st.lastParryAt or 0)) < holdCd and not (dodgeM2 and m2Attack) then
+			local holdCd = (attackerHoldingM1(attacker) or opts.fromCombo) and 0.02 or 0.035
+			if autoParry and (now - (st.lastParryAt or 0)) < holdCd and not m2Attack then
 				return
 			end
 
@@ -1392,10 +1442,10 @@ return function(ctx)
 			end
 
 			local dist = (theirRoot.Position - myRoot.Position).Magnitude
-			local m2Range = numFlag("Gakuran M2 Dodge Range", 14)
+			local m2Range = numFlag("Gakuran M2 Dodge Range", 16)
 			local dodgeRange = numFlag("Gakuran Dodge Range", 12)
-			local maxRange = math.max(range, dodgeRange, dodgeM2 and m2Range or 0)
-			if dist > maxRange + 2 then
+			local maxRange = math.max(range, dodgeRange, dodgeM2 and m2Range or 0, m2Attack and (range + 2) or 0)
+			if dist > maxRange + 2.5 then
 				debugLog("out of range", dist)
 				return
 			end
@@ -1406,7 +1456,7 @@ return function(ctx)
 			local entryMeta = {
 				name = dbEntry.name,
 				kind = dbEntry.kind,
-				hitDelay = dbEntry.hitDelay,
+				hitDelay = hitDelay,
 				_attackerName = attacker.DisplayName or attacker.Name,
 				attackerName = attacker.DisplayName or attacker.Name,
 				_waitMs = waitTime * 1000,
@@ -1414,24 +1464,48 @@ return function(ctx)
 				_pingComp = pingComp > 0,
 			}
 
-			-- Priority 1: Dodge M2 with forced back dash (uses game DashBack when MoveDir ~ 0/back).
-			if dodgeM2 and m2Attack and dist <= m2Range + 1 then
-				if (now - (st.lastDodgeAt or 0)) >= 0.18 then
-					doDodge("m2-back", entryMeta, { forceBack = true })
+			local parryOpts = {
+				isM2 = m2Attack,
+				holdSec = m2Attack and math.max(window + 0.06, 0.28) or nil,
+			}
+
+			-- M2: try back-dash first, then ALWAYS fall through to parry if dodge fails
+			if dodgeM2 and m2Attack and dist <= m2Range + 1.5 then
+				local dodged = false
+				if (now - (st.lastDodgeAt or 0)) >= 0.11 then
+					dodged = doDodge(isRetap and "m2-retap" or "m2-back", entryMeta, { forceBack = true }) == true
+				end
+				if dodged then
+					return
+				end
+				-- Capoeira spin etc. — parry with long hold if dash CD / failed
+				if autoParry and dist <= range + 3 then
+					doParry(entryMeta, parryOpts)
 				end
 				return
 			end
 
 			if autoDodge and behind and dist <= dodgeRange then
-				if (now - (st.lastDodgeAt or 0)) >= 0.18 then
-					doDodge(dbEntry.name or "rear", entryMeta)
+				local dodged = false
+				if (now - (st.lastDodgeAt or 0)) >= 0.11 then
+					dodged = doDodge(dbEntry.name or "rear", entryMeta) == true
+				end
+				if dodged then
+					return
+				end
+				-- rear dodge failed → still try parry if facing enough / close
+				if autoParry and dist <= range then
+					doParry(entryMeta, parryOpts)
 				end
 				return
 			end
 
-			if autoParry and dist <= range then
+			if autoParry and dist <= range + (m2Attack and 2 or 0) then
 				if not behind or not autoDodge then
-					doParry(entryMeta)
+					doParry(entryMeta, parryOpts)
+				elseif behind and autoDodge then
+					-- behind but dodge off-range / failed path
+					doParry(entryMeta, parryOpts)
 				end
 				return
 			end
@@ -1439,11 +1513,36 @@ return function(ctx)
 			if flag("Gakuran Dodge Fallback", false) and autoDodge then
 				local stunned = myChar
 					and (myChar:GetAttribute("Stunned") == true or myChar:GetAttribute("CantAnything") == true)
-				if stunned and (now - (st.lastDodgeAt or 0)) >= 0.18 then
+				if stunned and (now - (st.lastDodgeAt or 0)) >= 0.11 then
 					doDodge("fallback", entryMeta)
 				end
 			end
+		end
+
+		task.delay(waitTime, function()
+			st.pending[dedupe] = nil
+			fireResponse(false)
 		end)
+
+		-- Long M2s (Capoeira spin ~1.9s): re-assert block mid-window if still in range
+		if m2Attack and flag("Gakuran Auto Parry", false) then
+			local retapAt = waitTime + math.max(0.08, window * 0.45)
+			task.delay(retapAt, function()
+				if ctx.state.unloading then
+					return
+				end
+				-- only if attack track still roughly active
+				local still = true
+				if track then
+					pcall(function()
+						still = track.IsPlaying == true and trackTime(track) < (hitDelay + window + 0.25)
+					end)
+				end
+				if still then
+					fireResponse(true)
+				end
+			end)
+		end
 	end
 
 	local function animNameOf(track)
