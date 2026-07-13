@@ -1,14 +1,13 @@
 --[[
     xanhub | gakuran | ps_tools
 
-    Wraps the game's private-server OwnerCommands remote (same path as
-    CommandsScreenGui SERVER OPS → Bring / Goto / Heal / Respawn).
+    Mirrors VIP SERVER OPS via the stock remote only:
 
-      CommandsServiceClient:Invoke(action, { TargetUserId = userId })
-      OwnerCommands RemoteFunction under ReplicatedStorage.Remotes
+      ReplicatedStorage.Remotes.OwnerCommands:InvokeServer(action, payload)
 
-    Only useful when HasPanelAccess / private-server owner tools are available.
-    Does not invent admin powers — just mirrors the stock panel.
+    Never require() game ModuleScripts (CommandsServiceClient etc.) — that can
+    taint the executor thread with Plugin capability and break all later
+    Instance access (UI labels, notifications, devtools).
 ]]
 
 return function(ctx)
@@ -18,16 +17,20 @@ return function(ctx)
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 	local LocalPlayer = ctx.LocalPlayer or Players.LocalPlayer
 
+	if not columns or not columns.psLeft or not columns.psRight then
+		warn("[xanhub gakuran] ps_tools: Server Ops columns missing — re-exec after UI update")
+		return { setup = function() end }
+	end
+
 	if type(ctx.state.psTools) ~= "table" then
 		ctx.state.psTools = {}
 	end
 	local st = ctx.state.psTools
-	st.nameToUserId = st.nameToUserId or {}
-	st.service = nil
+	st.nameToUserId = {}
 
 	local statusSec = columns.psLeft:AddSection("Access")
-	ctx.refs.psAccess = statusSec:AddLabel("Access: checking…")
-	ctx.refs.psHint = statusSec:AddLabel("Uses game OwnerCommands (stock VIP tools)")
+	ctx.refs.psAccess = statusSec:AddLabel("Access: checking...")
+	statusSec:AddLabel("Stock OwnerCommands remote (no game require)")
 
 	local listSec = columns.psLeft:AddSection("Players")
 	local playerList = listSec:AddList({
@@ -36,12 +39,12 @@ return function(ctx)
 		values = { "(none)" },
 		value = "(none)",
 		max = 8,
-		tip = "Select a player, then use actions on the right",
+		tip = "Select a player, then use actions",
 	})
 	listSec:AddButton({
 		text = "Refresh List",
 		callback = function()
-			if st.refresh then
+			if type(st.refresh) == "function" then
 				st.refresh()
 			end
 		end,
@@ -51,108 +54,62 @@ return function(ctx)
 	actSec:AddLabel("Same as SERVER OPS panel")
 
 	local bulkSec = columns.psRight:AddSection("Everyone")
-	bulkSec:AddLabel("Server-wide (owner panel)")
+	bulkSec:AddLabel("Server-wide")
 
-	-- Resolve CommandsServiceClient (preferred) or raw remote ----------------
-
-	local function findLoaded(name)
-		if type(getloadedmodules) ~= "function" then
-			return nil
-		end
-		local ok, modules = pcall(getloadedmodules)
-		if not ok or type(modules) ~= "table" then
-			return nil
-		end
-		for _, m in ipairs(modules) do
-			if m and m.Name == name then
-				local rok, result = pcall(require, m)
-				if rok and type(result) == "table" then
-					return result
-				end
+	local function setAccessText(text)
+		pcall(function()
+			if ctx.refs.psAccess then
+				ctx.refs.psAccess.Text = "Access: " .. tostring(text)
 			end
-		end
-		return nil
-	end
-
-	local function getClient()
-		if type(st.service) == "table" and type(st.service.Invoke) == "function" then
-			return st.service
-		end
-		local mod = findLoaded("CommandsServiceClient")
-		if type(mod) == "table" then
-			local client = mod
-			if type(mod.Get) == "function" then
-				local ok, got = pcall(function()
-					return mod:Get()
-				end)
-				if ok and type(got) == "table" then
-					client = got
-				end
-			end
-			if type(client.Invoke) == "function" then
-				st.service = client
-				return client
-			end
-		end
-		return nil
+		end)
 	end
 
 	local function getRemote()
-		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-		local rf = remotes and remotes:FindFirstChild("OwnerCommands")
-		if rf and rf:IsA("RemoteFunction") then
+		local ok, rf = pcall(function()
+			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+			if not remotes then
+				return nil
+			end
+			local remote = remotes:FindFirstChild("OwnerCommands")
+			if remote and remote:IsA("RemoteFunction") then
+				return remote
+			end
+			return nil
+		end)
+		if ok then
 			return rf
 		end
 		return nil
 	end
 
 	local function hasAccess()
-		local client = getClient()
-		if client then
-			if type(client.HasPanelAccess) == "function" then
-				local ok, v = pcall(function()
-					return client:HasPanelAccess()
-				end)
-				if ok and v == true then
-					return true, "panel"
-				end
-			end
-			if type(client.IsPrivateServerOwner) == "function" then
-				local ok, v = pcall(function()
-					return client:IsPrivateServerOwner()
-				end)
-				if ok and v == true then
-					return true, "ps-owner"
-				end
-			end
-			if type(client.IsOwner) == "function" then
-				local ok, v = pcall(function()
-					return client:IsOwner()
-				end)
-				if ok and v == true then
-					return true, "owner"
-				end
-			end
+		local rf = getRemote()
+		if not rf then
+			return false, "no OwnerCommands remote"
 		end
-		-- Remote present in VIP session even if client methods fail
-		if getRemote() and game.PrivateServerId ~= "" then
-			return true, "remote"
+		-- VIP / reserved server
+		local psId = ""
+		pcall(function()
+			psId = tostring(game.PrivateServerId or "")
+		end)
+		if psId ~= "" then
+			return true, "vip remote"
 		end
-		return false, "none"
+		-- Panel UI present (owner/mod tools loaded)
+		local hasUi = false
+		pcall(function()
+			local pg = LocalPlayer:FindFirstChild("PlayerGui")
+			hasUi = pg ~= nil and pg:FindFirstChild("CommandsScreenGui") ~= nil
+		end)
+		if hasUi then
+			return true, "panel ui"
+		end
+		-- Remote exists — allow attempt; server rejects if unauthorized
+		return true, "remote"
 	end
 
 	local function invoke(action, payload)
 		payload = type(payload) == "table" and payload or {}
-		local client = getClient()
-		if client and type(client.Invoke) == "function" then
-			local ok, res = pcall(function()
-				return client:Invoke(action, payload)
-			end)
-			if ok then
-				return res
-			end
-			return { ok = false, error = tostring(res) }
-		end
 		local rf = getRemote()
 		if not rf then
 			return { ok = false, error = "OwnerCommands missing" }
@@ -166,46 +123,43 @@ return function(ctx)
 		return { ok = false, error = tostring(res) }
 	end
 
-	local function resultOk(res)
+	local function notifyResult(action, res)
+		local ok = false
+		local msg = "failed"
 		if type(res) == "table" then
 			if res.ok == true then
-				return true, res
+				ok = true
+			elseif res.ok == false then
+				msg = tostring(res.error or res.message or res.err or "denied")
+			else
+				ok = true -- unknown shape, treat as success
 			end
-			if res.ok == false then
-				return false, res
-			end
-			-- some actions return bare tables
-			return true, res
-		end
-		if res == true or res == nil then
-			return true, res
-		end
-		return false, res
-	end
-
-	local function notifyResult(action, res)
-		local ok, body = resultOk(res)
-		if ok then
-			ctx.notify(action .. " ✓", 2)
+		elseif res == true or res == nil then
+			ok = true
 		else
-			local msg = "failed"
-			if type(body) == "table" then
-				msg = tostring(body.error or body.message or body.err or "failed")
-			elseif body ~= nil then
-				msg = tostring(body)
-			end
-			ctx.notify(action .. " ✗ " .. msg:sub(1, 48), 3)
+			msg = tostring(res)
+		end
+		if ok then
+			ctx.notify(tostring(action) .. " ok", 2)
+		else
+			ctx.notify(tostring(action) .. " " .. msg:sub(1, 48), 3)
 		end
 	end
 
 	local function playerLabel(plr)
-		if not plr then
+		if typeof(plr) ~= "Instance" then
 			return nil
 		end
-		local display = plr.DisplayName
-		local name = plr.Name
-		if display and display ~= "" and display ~= name then
-			return string.format("%s (@%s)", display, name)
+		local name, display
+		pcall(function()
+			name = plr.Name
+			display = plr.DisplayName
+		end)
+		if type(name) ~= "string" then
+			return nil
+		end
+		if type(display) == "string" and display ~= "" and display ~= name then
+			return display .. " (@" .. name .. ")"
 		end
 		return name
 	end
@@ -219,9 +173,19 @@ return function(ctx)
 		if type(id) == "number" then
 			return id
 		end
-		-- fallback: match by name substring
-		for _, plr in ipairs(Players:GetPlayers()) do
-			if playerLabel(plr) == value or plr.Name == value or plr.DisplayName == value then
+		local list = Players:GetPlayers()
+		for i = 1, #list do
+			local plr = list[i]
+			local label = playerLabel(plr)
+			if label == value then
+				return plr.UserId
+			end
+			local n, d
+			pcall(function()
+				n = plr.Name
+				d = plr.DisplayName
+			end)
+			if n == value or d == value then
 				return plr.UserId
 			end
 		end
@@ -230,50 +194,72 @@ return function(ctx)
 
 	function st.refresh()
 		local allowed, why = hasAccess()
-		if ctx.refs.psAccess then
-			ctx.refs.psAccess.Text = allowed and ("Access: yes · " .. tostring(why)) or "Access: no (need VIP / panel perms)"
-		end
+		setAccessText(allowed and ("yes · " .. tostring(why)) or ("no · " .. tostring(why)))
 
 		if not playerList then
 			return
 		end
 
-		-- rebuild values
 		local labels = {}
-		table.clear(st.nameToUserId)
-		local players = Players:GetPlayers()
-		table.sort(players, function(a, b)
-			return string.lower(a.Name) < string.lower(b.Name)
+		st.nameToUserId = {}
+		local list = Players:GetPlayers()
+		table.sort(list, function(a, b)
+			local na, nb = "", ""
+			pcall(function()
+				na = string.lower(a.Name)
+				nb = string.lower(b.Name)
+			end)
+			return na < nb
 		end)
-		for _, plr in ipairs(players) do
+		for i = 1, #list do
+			local plr = list[i]
 			local label = playerLabel(plr)
 			if label then
 				labels[#labels + 1] = label
-				st.nameToUserId[label] = plr.UserId
+				local uid
+				pcall(function()
+					uid = plr.UserId
+				end)
+				if type(uid) == "number" then
+					st.nameToUserId[label] = uid
+				end
 			end
 		end
 		if #labels == 0 then
 			labels[1] = "(none)"
 		end
 
-		-- remove old entries not in list
+		-- Only touch list UI if createList has finished (has labels table / AddValue that builds rows)
+		local canMutate = type(playerList.AddValue) == "function"
+			and type(playerList.RemoveValue) == "function"
+			and type(playerList.values) == "table"
+
+		if not canMutate then
+			return
+		end
+
 		local keep = {}
-		for _, v in ipairs(labels) do
-			keep[v] = true
+		for i = 1, #labels do
+			keep[labels[i]] = true
 		end
+
 		local existing = {}
-		for _, v in ipairs(playerList.values) do
-			existing[#existing + 1] = v
+		for i = 1, #playerList.values do
+			existing[i] = playerList.values[i]
 		end
-		for _, v in ipairs(existing) do
+		for i = 1, #existing do
+			local v = existing[i]
 			if not keep[v] then
 				pcall(function()
 					playerList:RemoveValue(v)
 				end)
 			end
 		end
-		for _, v in ipairs(labels) do
-			if not playerList.labels or not playerList.labels[v] then
+		for i = 1, #labels do
+			local v = labels[i]
+			local has = playerList.labels and playerList.labels[v]
+			if not has then
+				-- Pre-init AddValue only stores values; post-init creates rows
 				pcall(function()
 					playerList:AddValue(v)
 				end)
@@ -282,16 +268,20 @@ return function(ctx)
 
 		local current = library.flags["Gakuran PS Target"]
 		if type(current) ~= "string" or not keep[current] then
-			pcall(function()
-				playerList:SetValue(labels[1], true)
-			end)
+			if type(playerList.SetValue) == "function" then
+				pcall(function()
+					playerList:SetValue(labels[1], true)
+				end)
+			else
+				library.flags["Gakuran PS Target"] = labels[1]
+				playerList.value = labels[1]
+			end
 		end
 	end
 
 	local function runOnTarget(action, label)
-		local allowed = hasAccess()
-		if not allowed then
-			ctx.notify("No private-server panel access", 3)
+		if not hasAccess() then
+			ctx.notify("No OwnerCommands access", 3)
 			return
 		end
 		local uid = selectedUserId()
@@ -304,9 +294,8 @@ return function(ctx)
 	end
 
 	local function runBulk(action, label)
-		local allowed = hasAccess()
-		if not allowed then
-			ctx.notify("No private-server panel access", 3)
+		if not hasAccess() then
+			ctx.notify("No OwnerCommands access", 3)
 			return
 		end
 		local res = invoke(action, {})
@@ -358,32 +347,41 @@ return function(ctx)
 	})
 
 	local function setup()
-		st.refresh()
-
-		ctx.addConnection(Players.PlayerAdded, function()
-			task.defer(st.refresh)
+		-- Defer refresh until list widgets exist post-Init
+		task.defer(function()
+			if ctx.state.unloading then
+				return
+			end
+			pcall(st.refresh)
 		end)
-		ctx.addConnection(Players.PlayerRemoving, function()
-			task.defer(st.refresh)
-		end)
 
-		-- light access refresh
+		if type(ctx.addConnection) == "function" then
+			ctx.addConnection(Players.PlayerAdded, function()
+				task.defer(function()
+					pcall(st.refresh)
+				end)
+			end)
+			ctx.addConnection(Players.PlayerRemoving, function()
+				task.defer(function()
+					pcall(st.refresh)
+				end)
+			end)
+		end
+
 		task.spawn(function()
 			while not ctx.state.unloading do
-				task.wait(4)
+				task.wait(5)
 				local allowed, why = hasAccess()
-				if ctx.refs.psAccess then
-					ctx.refs.psAccess.Text = allowed and ("Access: yes · " .. tostring(why))
-						or "Access: no (need VIP / panel perms)"
-				end
+				setAccessText(allowed and ("yes · " .. tostring(why)) or ("no · " .. tostring(why)))
 			end
 		end)
 	end
 
-	library:AddCleanup(function()
-		st.service = nil
-		table.clear(st.nameToUserId)
-	end)
+	if type(library.AddCleanup) == "function" then
+		library:AddCleanup(function()
+			table.clear(st.nameToUserId)
+		end)
+	end
 
 	return { setup = setup }
 end
