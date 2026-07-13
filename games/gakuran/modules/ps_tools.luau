@@ -1,13 +1,18 @@
 --[[
     xanhub | gakuran | ps_tools
 
-    Mirrors VIP SERVER OPS via the stock remote only:
+    Two paths (never require() game ModuleScripts — Plugin capability taint):
 
-      ReplicatedStorage.Remotes.OwnerCommands:InvokeServer(action, payload)
+    1) Owner mode (VIP / authorized):
+         ReplicatedStorage.Remotes.OwnerCommands:InvokeServer(action, payload)
 
-    Never require() game ModuleScripts (CommandsServiceClient etc.) — that can
-    taint the executor thread with Plugin capability and break all later
-    Instance access (UI labels, notifications, devtools).
+    2) Public mode (anyone):
+         Goto     → CFrame local character to target (replicates for you)
+         Bring    → best-effort move target HRP near you (loop; client-side)
+         Heal     → set Humanoid.Health = MaxHealth (self solid; others best-effort)
+         Respawn  → self: SpawnRequest / LoadCharacter; others: Health=0 then SpawnRequest
+
+    Owner path is tried first when the remote accepts the call; otherwise public fallback.
 ]]
 
 return function(ctx)
@@ -15,6 +20,7 @@ return function(ctx)
 	local columns = ctx.columns
 	local Players = ctx.Players or game:GetService("Players")
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local Workspace = ctx.Workspace or game:GetService("Workspace")
 	local LocalPlayer = ctx.LocalPlayer or Players.LocalPlayer
 
 	if not columns or not columns.psLeft or not columns.psRight then
@@ -27,10 +33,11 @@ return function(ctx)
 	end
 	local st = ctx.state.psTools
 	st.nameToUserId = {}
+	st.ownerOk = nil -- nil unknown, true/false cached lightly
 
 	local statusSec = columns.psLeft:AddSection("Access")
 	ctx.refs.psAccess = statusSec:AddLabel("Access: checking...")
-	statusSec:AddLabel("Stock OwnerCommands remote (no game require)")
+	statusSec:AddLabel("Owner remote if allowed · else public client")
 
 	local listSec = columns.psLeft:AddSection("Players")
 	local playerList = listSec:AddList({
@@ -51,10 +58,34 @@ return function(ctx)
 	})
 
 	local actSec = columns.psRight:AddSection("Actions")
-	actSec:AddLabel("Same as SERVER OPS panel")
+	actSec:AddLabel("Bring / Goto / Heal / Respawn")
 
 	local bulkSec = columns.psRight:AddSection("Everyone")
-	bulkSec:AddLabel("Server-wide")
+	bulkSec:AddLabel("All players (public = client loop)")
+
+	local modeSec = columns.psRight:AddSection("Mode")
+	modeSec:AddToggle({
+		text = "Prefer Owner Remote",
+		flag = "Gakuran PS Prefer Owner",
+		state = true,
+		tip = "Try OwnerCommands first (VIP). Falls back to public client methods.",
+	})
+	modeSec:AddToggle({
+		text = "Public Client Fallback",
+		flag = "Gakuran PS Public Fallback",
+		state = true,
+		tip = "When not authorized: Goto/Heal/Respawn self + best-effort Bring",
+	})
+
+	-- Helpers --------------------------------------------------------------
+
+	local function flag(name, default)
+		local v = library.flags[name]
+		if v == nil then
+			return default
+		end
+		return v
+	end
 
 	local function setAccessText(text)
 		pcall(function()
@@ -64,90 +95,111 @@ return function(ctx)
 		end)
 	end
 
-	local function getRemote()
-		local ok, rf = pcall(function()
+	local function getRemote(name)
+		local ok, inst = pcall(function()
 			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-			if not remotes then
-				return nil
-			end
-			local remote = remotes:FindFirstChild("OwnerCommands")
-			if remote and remote:IsA("RemoteFunction") then
-				return remote
-			end
-			return nil
+			return remotes and remotes:FindFirstChild(name)
 		end)
 		if ok then
+			return inst
+		end
+		return nil
+	end
+
+	local function getOwnerRemote()
+		local rf = getRemote("OwnerCommands")
+		if rf and rf:IsA("RemoteFunction") then
 			return rf
 		end
 		return nil
 	end
 
-	local function hasAccess()
-		local rf = getRemote()
+	local function ownerInvoke(action, payload)
+		local rf = getOwnerRemote()
 		if not rf then
-			return false, "no OwnerCommands remote"
-		end
-		-- VIP / reserved server
-		local psId = ""
-		pcall(function()
-			psId = tostring(game.PrivateServerId or "")
-		end)
-		if psId ~= "" then
-			return true, "vip remote"
-		end
-		-- Panel UI present (owner/mod tools loaded)
-		local hasUi = false
-		pcall(function()
-			local pg = LocalPlayer:FindFirstChild("PlayerGui")
-			hasUi = pg ~= nil and pg:FindFirstChild("CommandsScreenGui") ~= nil
-		end)
-		if hasUi then
-			return true, "panel ui"
-		end
-		-- Remote exists — allow attempt; server rejects if unauthorized
-		return true, "remote"
-	end
-
-	local function invoke(action, payload)
-		payload = type(payload) == "table" and payload or {}
-		local rf = getRemote()
-		if not rf then
-			return { ok = false, error = "OwnerCommands missing" }
+			return { ok = false, error = "no remote" }
 		end
 		local ok, res = pcall(function()
-			return rf:InvokeServer(action, payload)
+			return rf:InvokeServer(action, payload or {})
 		end)
-		if ok then
+		if not ok then
+			return { ok = false, error = tostring(res) }
+		end
+		if type(res) == "table" then
 			return res
 		end
-		return { ok = false, error = tostring(res) }
+		return { ok = res ~= false, data = res }
 	end
 
-	local function notifyResult(action, res)
-		local ok = false
-		local msg = "failed"
-		if type(res) == "table" then
-			if res.ok == true then
-				ok = true
-			elseif res.ok == false then
-				msg = tostring(res.error or res.message or res.err or "denied")
-			else
-				ok = true -- unknown shape, treat as success
+	-- Probe once: does Heal-self authorize?
+	local function refreshOwnerStatus()
+		if not flag("Gakuran PS Prefer Owner", true) then
+			st.ownerOk = false
+			return false
+		end
+		local rf = getOwnerRemote()
+		if not rf then
+			st.ownerOk = false
+			return false
+		end
+		local res = ownerInvoke("Heal", { TargetUserId = LocalPlayer.UserId })
+		local allowed = type(res) == "table" and res.ok == true
+		-- "Not authorized." means remote works but we are not op
+		if type(res) == "table" and res.ok == false then
+			local err = tostring(res.error or "")
+			if err:lower():find("not authorized") or err:lower():find("den") then
+				allowed = false
 			end
-		elseif res == true or res == nil then
-			ok = true
-		else
-			msg = tostring(res)
 		end
-		if ok then
-			ctx.notify(tostring(action) .. " ok", 2)
-		else
-			ctx.notify(tostring(action) .. " " .. msg:sub(1, 48), 3)
+		st.ownerOk = allowed
+		return allowed
+	end
+
+	local function charOf(plr)
+		if not plr then
+			return nil
 		end
+		local c
+		pcall(function()
+			local folder = Workspace:FindFirstChild("Players")
+			if folder then
+				local named = folder:FindFirstChild(plr.Name)
+				if named and named:FindFirstChildOfClass("Humanoid") then
+					c = named
+					return
+				end
+			end
+			c = plr.Character
+		end)
+		return c
+	end
+
+	local function hrpOf(character)
+		if not character then
+			return nil
+		end
+		local h
+		pcall(function()
+			h = character:FindFirstChild("HumanoidRootPart")
+				or character:FindFirstChild("Torso")
+				or character.PrimaryPart
+		end)
+		return h
+	end
+
+	local function humanoidOf(character)
+		if not character then
+			return nil
+		end
+		local h
+		pcall(function()
+			h = character:FindFirstChildOfClass("Humanoid")
+		end)
+		return h
 	end
 
 	local function playerLabel(plr)
-		if typeof(plr) ~= "Instance" then
+		if not plr then
 			return nil
 		end
 		local name, display
@@ -173,30 +225,248 @@ return function(ctx)
 		if type(id) == "number" then
 			return id
 		end
-		local list = Players:GetPlayers()
-		for i = 1, #list do
-			local plr = list[i]
+		for _, plr in ipairs(Players:GetPlayers()) do
 			local label = playerLabel(plr)
-			if label == value then
-				return plr.UserId
-			end
-			local n, d
-			pcall(function()
-				n = plr.Name
-				d = plr.DisplayName
-			end)
-			if n == value or d == value then
+			if label == value or plr.Name == value or plr.DisplayName == value then
 				return plr.UserId
 			end
 		end
 		return nil
 	end
 
-	function st.refresh()
-		local allowed, why = hasAccess()
-		setAccessText(allowed and ("yes · " .. tostring(why)) or ("no · " .. tostring(why)))
+	local function playerByUserId(uid)
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr.UserId == uid then
+				return plr
+			end
+		end
+		return nil
+	end
 
-		if not playerList then
+	local function notify(msg, t)
+		pcall(function()
+			ctx.notify(tostring(msg), t or 2)
+		end)
+	end
+
+	-- Public client actions ------------------------------------------------
+
+	local function publicGoto(targetPlr)
+		local myHrp = hrpOf(charOf(LocalPlayer))
+		local theirHrp = hrpOf(charOf(targetPlr))
+		if not myHrp or not theirHrp then
+			return false, "no character"
+		end
+		local ok, err = pcall(function()
+			myHrp.CFrame = theirHrp.CFrame * CFrame.new(0, 0, 3)
+		end)
+		return ok, err
+	end
+
+	local function publicBring(targetPlr)
+		local myHrp = hrpOf(charOf(LocalPlayer))
+		local theirChar = charOf(targetPlr)
+		local theirHrp = hrpOf(theirChar)
+		if not myHrp or not theirHrp then
+			return false, "no character"
+		end
+		-- Burst for a short window (same approach many public menus use)
+		local ok = true
+		local dest = myHrp.CFrame * CFrame.new(0, 0, -3)
+		for _ = 1, 25 do
+			local h = hrpOf(charOf(targetPlr)) or theirHrp
+			local success = pcall(function()
+				h.CFrame = dest
+				h.AssemblyLinearVelocity = Vector3.zero
+				h.AssemblyAngularVelocity = Vector3.zero
+			end)
+			if not success then
+				ok = false
+			end
+			task.wait()
+		end
+		return ok, ok and "client bring" or "bring blocked"
+	end
+
+	local function publicHeal(targetPlr)
+		local hum = humanoidOf(charOf(targetPlr))
+		if not hum then
+			return false, "no humanoid"
+		end
+		local ok, err = pcall(function()
+			hum.Health = hum.MaxHealth
+			-- clear common downed attrs if present
+			local ch = charOf(targetPlr)
+			if ch then
+				pcall(function()
+					ch:SetAttribute("Downed", false)
+				end)
+			end
+		end)
+		return ok, err
+	end
+
+	local function publicRespawn(targetPlr)
+		if targetPlr == LocalPlayer then
+			local fired = false
+			local sr = getRemote("SpawnRequest")
+			if sr and sr:IsA("RemoteEvent") then
+				fired = pcall(function()
+					sr:FireServer()
+				end) or fired
+			end
+			local lc = getRemote("LoadCharacter")
+			if lc and lc:IsA("RemoteFunction") then
+				fired = pcall(function()
+					lc:InvokeServer()
+				end) or fired
+			end
+			local rv = getRemote("Revive")
+			if rv and rv:IsA("RemoteEvent") then
+				fired = pcall(function()
+					rv:FireServer()
+				end) or fired
+			end
+			-- last resort: kill local humanoid so death/respawn flow runs
+			if not fired then
+				local hum = humanoidOf(charOf(LocalPlayer))
+				if hum then
+					pcall(function()
+						hum.Health = 0
+					end)
+					fired = true
+				end
+			end
+			return fired, fired and "self respawn" or "failed"
+		end
+
+		-- Others: try zero health (best-effort client)
+		local hum = humanoidOf(charOf(targetPlr))
+		if not hum then
+			return false, "no humanoid"
+		end
+		local ok = pcall(function()
+			hum.Health = 0
+		end)
+		return ok, ok and "client kill" or "blocked"
+	end
+
+	-- Unified action -------------------------------------------------------
+
+	local function runAction(action, targetPlr, label)
+		if not targetPlr then
+			notify("Pick a player first", 2)
+			return
+		end
+
+		local uid = targetPlr.UserId
+		local usedOwner = false
+		local ownerRes
+
+		if flag("Gakuran PS Prefer Owner", true) then
+			local ownerAction = action
+			-- map to OwnerCommands names
+			if action == "Goto" then
+				ownerAction = "TeleportTo"
+			end
+			ownerRes = ownerInvoke(ownerAction, { TargetUserId = uid })
+			if type(ownerRes) == "table" and ownerRes.ok == true then
+				usedOwner = true
+				notify((label or action) .. " ok (owner)", 2)
+				return
+			end
+		end
+
+		if not flag("Gakuran PS Public Fallback", true) then
+			local err = type(ownerRes) == "table" and tostring(ownerRes.error or "denied") or "denied"
+			notify((label or action) .. " " .. err:sub(1, 40), 3)
+			return
+		end
+
+		local ok, why
+		if action == "Bring" then
+			ok, why = publicBring(targetPlr)
+		elseif action == "Goto" or action == "TeleportTo" then
+			ok, why = publicGoto(targetPlr)
+		elseif action == "Heal" then
+			ok, why = publicHeal(targetPlr)
+		elseif action == "Respawn" then
+			ok, why = publicRespawn(targetPlr)
+		else
+			ok, why = false, "unknown"
+		end
+
+		if ok then
+			notify((label or action) .. " ok (public)", 2)
+		else
+			notify((label or action) .. " fail " .. tostring(why or ""):sub(1, 36), 3)
+		end
+	end
+
+	local function runBulk(action, label)
+		if flag("Gakuran PS Prefer Owner", true) then
+			local map = {
+				HealAll = "HealAll",
+				BringAll = "BringAll",
+				RespawnAll = "RespawnAll",
+			}
+			local ownerName = map[action]
+			if ownerName then
+				local res = ownerInvoke(ownerName, {})
+				if type(res) == "table" and res.ok == true then
+					notify((label or action) .. " ok (owner)", 2)
+					return
+				end
+			end
+		end
+
+		if not flag("Gakuran PS Public Fallback", true) then
+			notify((label or action) .. " denied", 3)
+			return
+		end
+
+		local n = 0
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if action == "HealAll" then
+				if publicHeal(plr) then
+					n = n + 1
+				end
+			elseif action == "BringAll" then
+				if plr ~= LocalPlayer and publicBring(plr) then
+					n = n + 1
+				end
+			elseif action == "RespawnAll" then
+				if publicRespawn(plr) then
+					n = n + 1
+				end
+			end
+		end
+		notify((label or action) .. " public x" .. tostring(n), 2)
+	end
+
+	function st.refresh()
+		local owner = st.ownerOk
+		if owner == nil then
+			-- don't spam Heal probe every refresh — light check only
+			local rf = getOwnerRemote()
+			local psId = ""
+			pcall(function()
+				psId = tostring(game.PrivateServerId or "")
+			end)
+			if rf and psId ~= "" then
+				setAccessText("vip remote present · public fallback on")
+			elseif rf then
+				setAccessText("public · owner remote locked · client fallback")
+			else
+				setAccessText("public client only")
+			end
+		elseif owner then
+			setAccessText("owner authorized")
+		else
+			setAccessText("public client fallback")
+		end
+
+		if not playerList or type(playerList.values) ~= "table" then
 			return
 		end
 
@@ -204,38 +474,18 @@ return function(ctx)
 		st.nameToUserId = {}
 		local list = Players:GetPlayers()
 		table.sort(list, function(a, b)
-			local na, nb = "", ""
-			pcall(function()
-				na = string.lower(a.Name)
-				nb = string.lower(b.Name)
-			end)
-			return na < nb
+			return string.lower(a.Name) < string.lower(b.Name)
 		end)
 		for i = 1, #list do
 			local plr = list[i]
 			local label = playerLabel(plr)
 			if label then
 				labels[#labels + 1] = label
-				local uid
-				pcall(function()
-					uid = plr.UserId
-				end)
-				if type(uid) == "number" then
-					st.nameToUserId[label] = uid
-				end
+				st.nameToUserId[label] = plr.UserId
 			end
 		end
 		if #labels == 0 then
 			labels[1] = "(none)"
-		end
-
-		-- Only touch list UI if createList has finished (has labels table / AddValue that builds rows)
-		local canMutate = type(playerList.AddValue) == "function"
-			and type(playerList.RemoveValue) == "function"
-			and type(playerList.values) == "table"
-
-		if not canMutate then
-			return
 		end
 
 		local keep = {}
@@ -243,87 +493,85 @@ return function(ctx)
 			keep[labels[i]] = true
 		end
 
-		local existing = {}
-		for i = 1, #playerList.values do
-			existing[i] = playerList.values[i]
-		end
-		for i = 1, #existing do
-			local v = existing[i]
-			if not keep[v] then
-				pcall(function()
-					playerList:RemoveValue(v)
-				end)
+		if type(playerList.RemoveValue) == "function" and type(playerList.AddValue) == "function" then
+			local existing = {}
+			for i = 1, #playerList.values do
+				existing[i] = playerList.values[i]
 			end
-		end
-		for i = 1, #labels do
-			local v = labels[i]
-			local has = playerList.labels and playerList.labels[v]
-			if not has then
-				-- Pre-init AddValue only stores values; post-init creates rows
-				pcall(function()
-					playerList:AddValue(v)
-				end)
+			for i = 1, #existing do
+				if not keep[existing[i]] then
+					pcall(function()
+						playerList:RemoveValue(existing[i])
+					end)
+				end
 			end
-		end
-
-		local current = library.flags["Gakuran PS Target"]
-		if type(current) ~= "string" or not keep[current] then
-			if type(playerList.SetValue) == "function" then
-				pcall(function()
-					playerList:SetValue(labels[1], true)
-				end)
-			else
-				library.flags["Gakuran PS Target"] = labels[1]
-				playerList.value = labels[1]
+			for i = 1, #labels do
+				local v = labels[i]
+				if not (playerList.labels and playerList.labels[v]) then
+					pcall(function()
+						playerList:AddValue(v)
+					end)
+				end
+			end
+			local current = library.flags["Gakuran PS Target"]
+			if type(current) ~= "string" or not keep[current] then
+				if type(playerList.SetValue) == "function" then
+					pcall(function()
+						playerList:SetValue(labels[1], true)
+					end)
+				else
+					library.flags["Gakuran PS Target"] = labels[1]
+					playerList.value = labels[1]
+				end
 			end
 		end
 	end
 
-	local function runOnTarget(action, label)
-		if not hasAccess() then
-			ctx.notify("No OwnerCommands access", 3)
-			return
-		end
+	local function withTarget(fn)
 		local uid = selectedUserId()
 		if not uid then
-			ctx.notify("Pick a player first", 2)
+			notify("Pick a player first", 2)
 			return
 		end
-		local res = invoke(action, { TargetUserId = uid })
-		notifyResult(label or action, res)
-	end
-
-	local function runBulk(action, label)
-		if not hasAccess() then
-			ctx.notify("No OwnerCommands access", 3)
+		local plr = playerByUserId(uid)
+		if not plr then
+			notify("Player left", 2)
+			st.refresh()
 			return
 		end
-		local res = invoke(action, {})
-		notifyResult(label or action, res)
+		fn(plr)
 	end
 
 	actSec:AddButton({
 		text = "Bring",
 		callback = function()
-			runOnTarget("Bring", "Bring")
+			withTarget(function(plr)
+				runAction("Bring", plr, "Bring")
+			end)
 		end,
 	})
 	actSec:AddButton({
 		text = "Goto",
 		callback = function()
-			runOnTarget("TeleportTo", "Goto")
+			withTarget(function(plr)
+				runAction("Goto", plr, "Goto")
+			end)
 		end,
 	})
 	actSec:AddButton({
 		text = "Heal",
 		callback = function()
-			runOnTarget("Heal", "Heal")
+			withTarget(function(plr)
+				runAction("Heal", plr, "Heal")
+			end)
 		end,
 	})
 	actSec:AddButton({
 		text = "Respawn",
 		callback = function()
-			runOnTarget("Respawn", "Respawn")
+			withTarget(function(plr)
+				runAction("Respawn", plr, "Respawn")
+			end)
 		end,
 	})
 
@@ -347,12 +595,21 @@ return function(ctx)
 	})
 
 	local function setup()
-		-- Defer refresh until list widgets exist post-Init
 		task.defer(function()
 			if ctx.state.unloading then
 				return
 			end
 			pcall(st.refresh)
+			-- one quiet owner probe (may heal you if authorized — rare)
+			task.delay(1.2, function()
+				if ctx.state.unloading then
+					return
+				end
+				pcall(function()
+					refreshOwnerStatus()
+					st.refresh()
+				end)
+			end)
 		end)
 
 		if type(ctx.addConnection) == "function" then
@@ -367,14 +624,6 @@ return function(ctx)
 				end)
 			end)
 		end
-
-		task.spawn(function()
-			while not ctx.state.unloading do
-				task.wait(5)
-				local allowed, why = hasAccess()
-				setAccessText(allowed and ("yes · " .. tostring(why)) or ("no · " .. tostring(why)))
-			end
-		end)
 	end
 
 	if type(library.AddCleanup) == "function" then
