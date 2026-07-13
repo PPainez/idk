@@ -22,21 +22,12 @@ return function(ctx)
 	local StarterGui = ctx.StarterGui or game:GetService("StarterGui")
 	local VirtualUser = ctx.VirtualUser or game:GetService("VirtualUser")
 	local TeleportService = ctx.TeleportService or game:GetService("TeleportService")
-	local UserInputService = game:GetService("UserInputService")
 	local LocalPlayer = Players.LocalPlayer
 
 	if type(ctx.state.qol) ~= "table" then
 		ctx.state.qol = {}
 	end
 	local st = ctx.state.qol
-
-	if type(ctx.state.vc) ~= "table" then
-		ctx.state.vc = {}
-	end
-	local vcState = ctx.state.vc
-	if not vcState.muteKey then
-		vcState.muteKey = Enum.KeyCode.V
-	end
 
 	-- UI ------------------------------------------------------------------
 
@@ -177,50 +168,18 @@ return function(ctx)
 		end,
 	})
 
-	vc:AddButton({
+	vc:AddBind({
 		text = "Mute / Unmute",
+		flag = "Gakuran VC Mute Bind",
+		key = "V",
+		mode = "toggle",
 		callback = function()
 			if ctx.vcController and type(ctx.vcController.ToggleMute) == "function" then
 				ctx.vcController.ToggleMute()
-			else
-				if ctx.notify then ctx.notify("VC module not ready", 3) end
 			end
 		end,
 	})
 
-	-- Keybind row — shows current key like [INSERT] on the menu open/close row
-	local function keyName(kc)
-		local n = tostring(kc):match("KeyCode%.(.+)")
-		return n or tostring(kc)
-	end
-	ctx.refs.vcBindLabel = vc:AddLabel("Mute / Unmute  [" .. keyName(vcState.muteKey) .. "]")
-
-	local bindWaiting = false
-	vc:AddButton({
-		text = "Set Mute Key",
-		callback = function()
-			if bindWaiting then return end
-			bindWaiting = true
-			if ctx.notify then ctx.notify("Press any key to set mute bind...", 4) end
-			if ctx.refs.vcBindLabel then
-				ctx.refs.vcBindLabel.Text = "Mute / Unmute  [?]"
-			end
-			local conn
-			conn = UserInputService.InputBegan:Connect(function(input, gp)
-				if gp then return end
-				if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-				conn:Disconnect()
-				bindWaiting = false
-				vcState.muteKey = input.KeyCode
-				if ctx.refs.vcBindLabel then
-					ctx.refs.vcBindLabel.Text = "Mute / Unmute  [" .. keyName(input.KeyCode) .. "]"
-				end
-				if ctx.notify then
-					ctx.notify("Mute bind → " .. keyName(input.KeyCode), 2)
-				end
-			end)
-		end,
-	})
 	vc:AddLabel("Tip: Unmute in Roblox settings first, then run bypass.")
 
 	-- Runtime -------------------------------------------------------------
@@ -474,14 +433,6 @@ return function(ctx)
 			applyCamera()
 			applyCore()
 			applyAntiAfk()
-			-- Sync bind label in case vcController loaded after us
-			if ctx.refs.vcBindLabel and vcState.muteKey then
-				local function keyName2(kc)
-					local n = tostring(kc):match("KeyCode%.(.+)")
-					return n or tostring(kc)
-				end
-				ctx.refs.vcBindLabel.Text = "Mute / Unmute  [" .. keyName2(vcState.muteKey) .. "]"
-			end
 		end)
 
 		if type(library.AddCleanup) == "function" then
