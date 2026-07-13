@@ -181,6 +181,7 @@ for _, modulePath in ipairs({
 	"games/gakuran/modules/rhythm.luau",
 	"games/gakuran/modules/basketball.luau",
 	"games/gakuran/modules/death_skip.luau",
+	"games/gakuran/modules/ps_tools.luau",
 }) do
 	local feature = safeLoadFeature(modulePath)
 	if feature and type(feature.setup) == "function" then
