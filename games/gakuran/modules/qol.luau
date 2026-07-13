@@ -157,14 +157,30 @@ return function(ctx)
 	-- Voice Chat ----------------------------------------------------------------
 	local vc = right:AddSection("Voice Chat")
 
-	vc:AddButton({
+	local vcBypassBtn = vc:AddButton({
 		text = "Start VC Bypass",
 		callback = function()
-			if ctx.vcController and type(ctx.vcController.Start) == "function" then
-				ctx.vcController.Start()
-			else
+			local vcc = ctx.vcController
+			if not vcc or type(vcc.Start) ~= "function" then
 				if ctx.notify then ctx.notify("VC module not ready", 3) end
+				return
 			end
+			if vcc.IsBypassActive and vcc.IsBypassActive() then
+				if ctx.notify then ctx.notify("VC bypass already active", 2) end
+				return
+			end
+			vcc.Start()
+			-- Gray out + rename the button so it's clear bypass is running
+			task.delay(3.5, function()
+				if vcc.IsBypassActive and vcc.IsBypassActive() then
+					pcall(function()
+						if vcBypassBtn and vcBypassBtn.title then
+							vcBypassBtn.title.Text = "VC Bypass ✓ Active"
+							vcBypassBtn.title.TextColor3 = Color3.fromRGB(90, 100, 115)
+						end
+					end)
+				end
+			end)
 		end,
 	})
 
@@ -174,8 +190,14 @@ return function(ctx)
 		key = "V",
 		mode = "toggle",
 		callback = function()
-			if ctx.vcController and type(ctx.vcController.ToggleMute) == "function" then
-				ctx.vcController.ToggleMute()
+			local vcc = ctx.vcController
+			if not vcc then return end
+			if vcc.IsBypassActive and not vcc.IsBypassActive() then
+				if ctx.notify then ctx.notify("⚠ VC not bypassed", 3) end
+				return
+			end
+			if type(vcc.ToggleMute) == "function" then
+				vcc.ToggleMute()
 			end
 		end,
 	})
