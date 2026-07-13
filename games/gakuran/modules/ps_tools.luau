@@ -1,18 +1,16 @@
 --[[
     xanhub | gakuran | ps_tools
 
-    Two paths (never require() game ModuleScripts — Plugin capability taint):
+    Server Ops / Admin-style player tools.
 
-    1) Owner mode (VIP / authorized):
-         ReplicatedStorage.Remotes.OwnerCommands:InvokeServer(action, payload)
+    Paths (no require() of game modules — avoids Plugin capability taint):
+      A) OwnerCommands RemoteFunction when authorized (VIP / panel)
+      B) Public client puppet loop (CFrame / velocity / anchor / humanoid)
 
-    2) Public mode (anyone):
-         Goto     → CFrame local character to target (replicates for you)
-         Bring    → best-effort move target HRP near you (loop; client-side)
-         Heal     → set Humanoid.Health = MaxHealth (self solid; others best-effort)
-         Respawn  → self: SpawnRequest / LoadCharacter; others: Health=0 then SpawnRequest
-
-    Owner path is tried first when the remote accepts the call; otherwise public fallback.
+    Citra Hub note applies here too: full FE control of other players only
+    works when the server grants ownership or on vulnerable ("TROLL") builds.
+    On stock public FE, Goto (self TP) is solid; Bring/Fling/etc. are
+    best-effort continuous client writes (same approach other hubs use).
 ]]
 
 return function(ctx)
@@ -21,10 +19,11 @@ return function(ctx)
 	local Players = ctx.Players or game:GetService("Players")
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 	local Workspace = ctx.Workspace or game:GetService("Workspace")
+	local RunService = ctx.RunService or game:GetService("RunService")
 	local LocalPlayer = ctx.LocalPlayer or Players.LocalPlayer
 
 	if not columns or not columns.psLeft or not columns.psRight then
-		warn("[xanhub gakuran] ps_tools: Server Ops columns missing — re-exec after UI update")
+		warn("[xanhub gakuran] ps_tools: Server Ops columns missing")
 		return { setup = function() end }
 	end
 
@@ -33,51 +32,71 @@ return function(ctx)
 	end
 	local st = ctx.state.psTools
 	st.nameToUserId = {}
-	st.ownerOk = nil -- nil unknown, true/false cached lightly
+	st.puppets = st.puppets or {} -- userId -> { mode = "bring"|"fling"|..., until = t }
+	st.puppetConn = nil
+
+	-- UI ------------------------------------------------------------------
 
 	local statusSec = columns.psLeft:AddSection("Access")
 	ctx.refs.psAccess = statusSec:AddLabel("Access: checking...")
-	statusSec:AddLabel("Owner remote if allowed · else public client")
+	statusSec:AddLabel("Owner remote if allowed, else client puppet")
+	statusSec:AddLabel("Note: other hubs only fully work on TROLL/vulnerable builds")
 
-	local listSec = columns.psLeft:AddSection("Players")
+	local listSec = columns.psLeft:AddSection("Target")
 	local playerList = listSec:AddList({
-		text = "Target",
+		text = "Puppet",
 		flag = "Gakuran PS Target",
-		values = { "(none)" },
+		values = { "(none)", "all" },
 		value = "(none)",
-		max = 8,
-		tip = "Select a player, then use actions",
+		max = 10,
+		tip = "Select player or 'all'",
 	})
 	listSec:AddButton({
-		text = "Refresh List",
+		text = "Refresh Players",
 		callback = function()
-			if type(st.refresh) == "function" then
+			if st.refresh then
 				st.refresh()
 			end
 		end,
 	})
+	listSec:AddToggle({
+		text = "Spectate Target",
+		flag = "Gakuran PS Spectate",
+		state = false,
+		callback = function(on)
+			if st.spectate then
+				st.spectate(on)
+			end
+		end,
+	})
 
-	local actSec = columns.psRight:AddSection("Actions")
-	actSec:AddLabel("Bring / Goto / Heal / Respawn")
-
-	local bulkSec = columns.psRight:AddSection("Everyone")
-	bulkSec:AddLabel("All players (public = client loop)")
-
-	local modeSec = columns.psRight:AddSection("Mode")
+	local modeSec = columns.psLeft:AddSection("Mode")
 	modeSec:AddToggle({
 		text = "Prefer Owner Remote",
 		flag = "Gakuran PS Prefer Owner",
 		state = true,
-		tip = "Try OwnerCommands first (VIP). Falls back to public client methods.",
 	})
 	modeSec:AddToggle({
-		text = "Public Client Fallback",
+		text = "Client Puppet Fallback",
 		flag = "Gakuran PS Public Fallback",
 		state = true,
-		tip = "When not authorized: Goto/Heal/Respawn self + best-effort Bring",
+		tip = "Loop CFrame/velocity/anchor on targets when not authorized",
+	})
+	modeSec:AddSlider({
+		text = "Puppet Hold Ms",
+		flag = "Gakuran PS Puppet Ms",
+		min = 200,
+		max = 8000,
+		value = 2500,
+		float = 100,
+		suffix = " ms",
+		tip = "How long continuous puppet runs (Bring/Fling/Spin/Freeze)",
 	})
 
-	-- Helpers --------------------------------------------------------------
+	local actSec = columns.psRight:AddSection("Commands")
+	local bulkSec = columns.psRight:AddSection("Bulk / Stop")
+
+	-- Helpers -------------------------------------------------------------
 
 	local function flag(name, default)
 		local v = library.flags[name]
@@ -87,7 +106,17 @@ return function(ctx)
 		return v
 	end
 
-	local function setAccessText(text)
+	local function numFlag(name, default)
+		return tonumber(flag(name, default)) or default
+	end
+
+	local function notify(msg, t)
+		pcall(function()
+			ctx.notify(tostring(msg), t or 2)
+		end)
+	end
+
+	local function setAccess(text)
 		pcall(function()
 			if ctx.refs.psAccess then
 				ctx.refs.psAccess.Text = "Access: " .. tostring(text)
@@ -97,27 +126,16 @@ return function(ctx)
 
 	local function getRemote(name)
 		local ok, inst = pcall(function()
-			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-			return remotes and remotes:FindFirstChild(name)
+			local r = ReplicatedStorage:FindFirstChild("Remotes")
+			return r and r:FindFirstChild(name)
 		end)
-		if ok then
-			return inst
-		end
-		return nil
-	end
-
-	local function getOwnerRemote()
-		local rf = getRemote("OwnerCommands")
-		if rf and rf:IsA("RemoteFunction") then
-			return rf
-		end
-		return nil
+		return ok and inst or nil
 	end
 
 	local function ownerInvoke(action, payload)
-		local rf = getOwnerRemote()
-		if not rf then
-			return { ok = false, error = "no remote" }
+		local rf = getRemote("OwnerCommands")
+		if not rf or not rf:IsA("RemoteFunction") then
+			return { ok = false, error = "no OwnerCommands" }
 		end
 		local ok, res = pcall(function()
 			return rf:InvokeServer(action, payload or {})
@@ -129,30 +147,6 @@ return function(ctx)
 			return res
 		end
 		return { ok = res ~= false, data = res }
-	end
-
-	-- Probe once: does Heal-self authorize?
-	local function refreshOwnerStatus()
-		if not flag("Gakuran PS Prefer Owner", true) then
-			st.ownerOk = false
-			return false
-		end
-		local rf = getOwnerRemote()
-		if not rf then
-			st.ownerOk = false
-			return false
-		end
-		local res = ownerInvoke("Heal", { TargetUserId = LocalPlayer.UserId })
-		local allowed = type(res) == "table" and res.ok == true
-		-- "Not authorized." means remote works but we are not op
-		if type(res) == "table" and res.ok == false then
-			local err = tostring(res.error or "")
-			if err:lower():find("not authorized") or err:lower():find("den") then
-				allowed = false
-			end
-		end
-		st.ownerOk = allowed
-		return allowed
 	end
 
 	local function charOf(plr)
@@ -174,26 +168,24 @@ return function(ctx)
 		return c
 	end
 
-	local function hrpOf(character)
-		if not character then
+	local function hrpOf(ch)
+		if not ch then
 			return nil
 		end
 		local h
 		pcall(function()
-			h = character:FindFirstChild("HumanoidRootPart")
-				or character:FindFirstChild("Torso")
-				or character.PrimaryPart
+			h = ch:FindFirstChild("HumanoidRootPart") or ch.PrimaryPart
 		end)
 		return h
 	end
 
-	local function humanoidOf(character)
-		if not character then
+	local function humOf(ch)
+		if not ch then
 			return nil
 		end
 		local h
 		pcall(function()
-			h = character:FindFirstChildOfClass("Humanoid")
+			h = ch:FindFirstChildOfClass("Humanoid")
 		end)
 		return h
 	end
@@ -216,276 +208,475 @@ return function(ctx)
 		return name
 	end
 
-	local function selectedUserId()
+	local function resolveTargets()
 		local value = library.flags["Gakuran PS Target"]
+		local list = {}
+		if value == "all" then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= LocalPlayer then
+					list[#list + 1] = p
+				end
+			end
+			return list
+		end
 		if type(value) ~= "string" or value == "" or value == "(none)" then
-			return nil
+			return list
 		end
-		local id = st.nameToUserId[value]
-		if type(id) == "number" then
-			return id
-		end
-		for _, plr in ipairs(Players:GetPlayers()) do
-			local label = playerLabel(plr)
-			if label == value or plr.Name == value or plr.DisplayName == value then
-				return plr.UserId
+		local uid = st.nameToUserId[value]
+		for _, p in ipairs(Players:GetPlayers()) do
+			if (uid and p.UserId == uid) or playerLabel(p) == value or p.Name == value then
+				list[1] = p
+				break
 			end
 		end
-		return nil
+		return list
 	end
 
-	local function playerByUserId(uid)
-		for _, plr in ipairs(Players:GetPlayers()) do
-			if plr.UserId == uid then
-				return plr
+	-- Spectate ------------------------------------------------------------
+
+	local oldCamSubject
+	function st.spectate(on)
+		local cam = Workspace.CurrentCamera
+		if not cam then
+			return
+		end
+		if on then
+			local targets = resolveTargets()
+			local plr = targets[1]
+			if not plr then
+				notify("Pick a target to spectate", 2)
+				library.flags["Gakuran PS Spectate"] = false
+				return
 			end
-		end
-		return nil
-	end
-
-	local function notify(msg, t)
-		pcall(function()
-			ctx.notify(tostring(msg), t or 2)
-		end)
-	end
-
-	-- Public client actions ------------------------------------------------
-
-	local function publicGoto(targetPlr)
-		local myHrp = hrpOf(charOf(LocalPlayer))
-		local theirHrp = hrpOf(charOf(targetPlr))
-		if not myHrp or not theirHrp then
-			return false, "no character"
-		end
-		local ok, err = pcall(function()
-			myHrp.CFrame = theirHrp.CFrame * CFrame.new(0, 0, 3)
-		end)
-		return ok, err
-	end
-
-	local function publicBring(targetPlr)
-		local myHrp = hrpOf(charOf(LocalPlayer))
-		local theirChar = charOf(targetPlr)
-		local theirHrp = hrpOf(theirChar)
-		if not myHrp or not theirHrp then
-			return false, "no character"
-		end
-		-- Burst for a short window (same approach many public menus use)
-		local ok = true
-		local dest = myHrp.CFrame * CFrame.new(0, 0, -3)
-		for _ = 1, 25 do
-			local h = hrpOf(charOf(targetPlr)) or theirHrp
-			local success = pcall(function()
-				h.CFrame = dest
-				h.AssemblyLinearVelocity = Vector3.zero
-				h.AssemblyAngularVelocity = Vector3.zero
-			end)
-			if not success then
-				ok = false
-			end
-			task.wait()
-		end
-		return ok, ok and "client bring" or "bring blocked"
-	end
-
-	local function publicHeal(targetPlr)
-		local hum = humanoidOf(charOf(targetPlr))
-		if not hum then
-			return false, "no humanoid"
-		end
-		local ok, err = pcall(function()
-			hum.Health = hum.MaxHealth
-			-- clear common downed attrs if present
-			local ch = charOf(targetPlr)
-			if ch then
+			local hum = humOf(charOf(plr))
+			if hum then
 				pcall(function()
-					ch:SetAttribute("Downed", false)
+					if not oldCamSubject then
+						oldCamSubject = cam.CameraSubject
+					end
+					cam.CameraSubject = hum
 				end)
+				notify("Spectating " .. plr.Name, 2)
 			end
-		end)
-		return ok, err
+		else
+			pcall(function()
+				local me = humOf(charOf(LocalPlayer))
+				cam.CameraSubject = oldCamSubject or me
+				oldCamSubject = nil
+			end)
+		end
 	end
 
-	local function publicRespawn(targetPlr)
-		if targetPlr == LocalPlayer then
-			local fired = false
+	-- Puppet engine -------------------------------------------------------
+
+	local function clearPuppet(uid)
+		st.puppets[uid] = nil
+		local plr = Players:GetPlayerByUserId(uid)
+		if plr then
+			local hrp = hrpOf(charOf(plr))
+			local hum = humOf(charOf(plr))
+			pcall(function()
+				if hrp then
+					hrp.Anchored = false
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					hrp.AssemblyAngularVelocity = Vector3.zero
+				end
+				if hum then
+					hum.PlatformStand = false
+					hum.Sit = false
+				end
+			end)
+		end
+	end
+
+	local function clearAllPuppets()
+		local ids = {}
+		for uid in pairs(st.puppets) do
+			ids[#ids + 1] = uid
+		end
+		for i = 1, #ids do
+			clearPuppet(ids[i])
+		end
+	end
+
+	local function startPuppet(plr, mode, durationSec)
+		if not plr then
+			return
+		end
+		local ms = durationSec or (numFlag("Gakuran PS Puppet Ms", 2500) / 1000)
+		st.puppets[plr.UserId] = {
+			mode = mode,
+			untilT = os.clock() + ms,
+			name = plr.Name,
+		}
+	end
+
+	local function ensurePuppetLoop()
+		if st.puppetConn then
+			return
+		end
+		st.puppetConn = RunService.Heartbeat:Connect(function()
+			if ctx.state.unloading then
+				return
+			end
+			if not flag("Gakuran PS Public Fallback", true) then
+				return
+			end
+			local now = os.clock()
+			local meHrp = hrpOf(charOf(LocalPlayer))
+			local remove = {}
+			for uid, job in pairs(st.puppets) do
+				if now > (job.untilT or 0) then
+					remove[#remove + 1] = uid
+				else
+					local plr = Players:GetPlayerByUserId(uid)
+					if not plr then
+						remove[#remove + 1] = uid
+					else
+						local ch = charOf(plr)
+						local hrp = hrpOf(ch)
+						local hum = humOf(ch)
+						if hrp then
+							local mode = job.mode
+							if mode == "bring" and meHrp then
+								pcall(function()
+									hrp.Anchored = false
+									hrp.CFrame = meHrp.CFrame * CFrame.new(2, 0, 0)
+									hrp.AssemblyLinearVelocity = Vector3.zero
+									hrp.AssemblyAngularVelocity = Vector3.zero
+								end)
+							elseif mode == "fling" then
+								pcall(function()
+									hrp.Anchored = false
+									if hum then
+										hum.PlatformStand = true
+									end
+									hrp.AssemblyLinearVelocity = Vector3.new(
+										(math.random() - 0.5) * 120,
+										90 + math.random() * 80,
+										(math.random() - 0.5) * 120
+									)
+									hrp.AssemblyAngularVelocity = Vector3.new(40, 40, 40)
+								end)
+							elseif mode == "spin" then
+								pcall(function()
+									hrp.Anchored = false
+									hrp.AssemblyAngularVelocity = Vector3.new(0, 80, 0)
+								end)
+							elseif mode == "freeze" then
+								pcall(function()
+									hrp.Anchored = true
+									hrp.AssemblyLinearVelocity = Vector3.zero
+									hrp.AssemblyAngularVelocity = Vector3.zero
+									if hum then
+										hum.PlatformStand = true
+									end
+								end)
+							elseif mode == "sit" then
+								pcall(function()
+									if hum then
+										hum.Sit = true
+									end
+								end)
+							end
+						end
+					end
+				end
+			end
+			for i = 1, #remove do
+				clearPuppet(remove[i])
+			end
+		end)
+		if type(ctx.addConnection) == "function" then
+			-- track for unload via library cleanup instead
+		end
+	end
+
+	-- Owner + public actions ----------------------------------------------
+
+	local OWNER_MAP = {
+		Bring = "Bring",
+		Goto = "TeleportTo",
+		Heal = "Heal",
+		Respawn = "Respawn",
+		Kill = nil, -- no stock kill
+		Fling = nil,
+		Spin = nil,
+		Freeze = nil,
+		Unfreeze = nil,
+		Sit = nil,
+		Jump = nil,
+	}
+
+	local function tryOwnerOn(plr, action)
+		if not flag("Gakuran PS Prefer Owner", true) then
+			return false
+		end
+		local mapped = OWNER_MAP[action]
+		if not mapped then
+			return false
+		end
+		local res = ownerInvoke(mapped, { TargetUserId = plr.UserId })
+		return type(res) == "table" and res.ok == true, res
+	end
+
+	local function publicGoto(plr)
+		local me = hrpOf(charOf(LocalPlayer))
+		local them = hrpOf(charOf(plr))
+		if not me or not them then
+			return false
+		end
+		return pcall(function()
+			me.CFrame = them.CFrame * CFrame.new(0, 0, 3)
+		end)
+	end
+
+	local function publicHeal(plr)
+		local hum = humOf(charOf(plr))
+		if not hum then
+			return false
+		end
+		return pcall(function()
+			hum.Health = hum.MaxHealth
+		end)
+	end
+
+	local function publicKill(plr)
+		local hum = humOf(charOf(plr))
+		if not hum then
+			return false
+		end
+		return pcall(function()
+			hum.Health = 0
+		end)
+	end
+
+	local function publicRespawn(plr)
+		if plr == LocalPlayer then
+			local ok = false
 			local sr = getRemote("SpawnRequest")
 			if sr and sr:IsA("RemoteEvent") then
-				fired = pcall(function()
+				ok = pcall(function()
 					sr:FireServer()
-				end) or fired
+				end) or ok
 			end
 			local lc = getRemote("LoadCharacter")
 			if lc and lc:IsA("RemoteFunction") then
-				fired = pcall(function()
+				ok = pcall(function()
 					lc:InvokeServer()
-				end) or fired
+				end) or ok
 			end
 			local rv = getRemote("Revive")
 			if rv and rv:IsA("RemoteEvent") then
-				fired = pcall(function()
+				ok = pcall(function()
 					rv:FireServer()
-				end) or fired
+				end) or ok
 			end
-			-- last resort: kill local humanoid so death/respawn flow runs
-			if not fired then
-				local hum = humanoidOf(charOf(LocalPlayer))
-				if hum then
-					pcall(function()
-						hum.Health = 0
-					end)
-					fired = true
+			return ok
+		end
+		return publicKill(plr)
+	end
+
+	local function publicJump(plr)
+		local hum = humOf(charOf(plr))
+		if not hum then
+			return false
+		end
+		return pcall(function()
+			hum.Jump = true
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end)
+	end
+
+	local function runOnTargets(action, label)
+		local targets = resolveTargets()
+		if #targets == 0 then
+			notify("Pick a target (or all)", 2)
+			return
+		end
+
+		ensurePuppetLoop()
+		local ownerHits, clientHits = 0, 0
+
+		for _, plr in ipairs(targets) do
+			local owned = false
+			if action == "Goto" and plr ~= LocalPlayer then
+				-- Goto is always self → them
+				if tryOwnerOn(plr, "Goto") then
+					owned = true
+					ownerHits = ownerHits + 1
+				elseif flag("Gakuran PS Public Fallback", true) and publicGoto(plr) then
+					clientHits = clientHits + 1
+				end
+			elseif action == "Bring" then
+				if tryOwnerOn(plr, "Bring") then
+					owned = true
+					ownerHits = ownerHits + 1
+				elseif flag("Gakuran PS Public Fallback", true) then
+					startPuppet(plr, "bring")
+					clientHits = clientHits + 1
+				end
+			elseif action == "Heal" then
+				if tryOwnerOn(plr, "Heal") then
+					ownerHits = ownerHits + 1
+				elseif flag("Gakuran PS Public Fallback", true) and publicHeal(plr) then
+					clientHits = clientHits + 1
+				end
+			elseif action == "Respawn" then
+				if tryOwnerOn(plr, "Respawn") then
+					ownerHits = ownerHits + 1
+				elseif flag("Gakuran PS Public Fallback", true) and publicRespawn(plr) then
+					clientHits = clientHits + 1
+				end
+			elseif action == "Fling" then
+				if flag("Gakuran PS Public Fallback", true) then
+					startPuppet(plr, "fling")
+					clientHits = clientHits + 1
+				end
+			elseif action == "Spin" then
+				if flag("Gakuran PS Public Fallback", true) then
+					startPuppet(plr, "spin")
+					clientHits = clientHits + 1
+				end
+			elseif action == "Freeze" then
+				if flag("Gakuran PS Public Fallback", true) then
+					startPuppet(plr, "freeze")
+					clientHits = clientHits + 1
+				end
+			elseif action == "Unfreeze" then
+				clearPuppet(plr.UserId)
+				clientHits = clientHits + 1
+			elseif action == "Sit" then
+				if flag("Gakuran PS Public Fallback", true) then
+					startPuppet(plr, "sit")
+					clientHits = clientHits + 1
+				end
+			elseif action == "Jump" then
+				if flag("Gakuran PS Public Fallback", true) and publicJump(plr) then
+					clientHits = clientHits + 1
+				end
+			elseif action == "Kill" then
+				if flag("Gakuran PS Public Fallback", true) and publicKill(plr) then
+					clientHits = clientHits + 1
 				end
 			end
-			return fired, fired and "self respawn" or "failed"
+			owned = owned -- silence
 		end
 
-		-- Others: try zero health (best-effort client)
-		local hum = humanoidOf(charOf(targetPlr))
-		if not hum then
-			return false, "no humanoid"
-		end
-		local ok = pcall(function()
-			hum.Health = 0
-		end)
-		return ok, ok and "client kill" or "blocked"
+		local msg = (label or action)
+			.. " · owner "
+			.. tostring(ownerHits)
+			.. " · client "
+			.. tostring(clientHits)
+		notify(msg, 2)
 	end
 
-	-- Unified action -------------------------------------------------------
+	-- Buttons (Citra-like set + our extras) -------------------------------
 
-	local function runAction(action, targetPlr, label)
-		if not targetPlr then
-			notify("Pick a player first", 2)
-			return
-		end
-
-		local uid = targetPlr.UserId
-		local usedOwner = false
-		local ownerRes
-
-		if flag("Gakuran PS Prefer Owner", true) then
-			local ownerAction = action
-			-- map to OwnerCommands names
-			if action == "Goto" then
-				ownerAction = "TeleportTo"
-			end
-			ownerRes = ownerInvoke(ownerAction, { TargetUserId = uid })
-			if type(ownerRes) == "table" and ownerRes.ok == true then
-				usedOwner = true
-				notify((label or action) .. " ok (owner)", 2)
-				return
-			end
-		end
-
-		if not flag("Gakuran PS Public Fallback", true) then
-			local err = type(ownerRes) == "table" and tostring(ownerRes.error or "denied") or "denied"
-			notify((label or action) .. " " .. err:sub(1, 40), 3)
-			return
-		end
-
-		local ok, why
-		if action == "Bring" then
-			ok, why = publicBring(targetPlr)
-		elseif action == "Goto" or action == "TeleportTo" then
-			ok, why = publicGoto(targetPlr)
-		elseif action == "Heal" then
-			ok, why = publicHeal(targetPlr)
-		elseif action == "Respawn" then
-			ok, why = publicRespawn(targetPlr)
-		else
-			ok, why = false, "unknown"
-		end
-
-		if ok then
-			notify((label or action) .. " ok (public)", 2)
-		else
-			notify((label or action) .. " fail " .. tostring(why or ""):sub(1, 36), 3)
-		end
+	local function btn(section, text, action)
+		section:AddButton({
+			text = text,
+			callback = function()
+				runOnTargets(action, text)
+			end,
+		})
 	end
 
-	local function runBulk(action, label)
-		if flag("Gakuran PS Prefer Owner", true) then
-			local map = {
-				HealAll = "HealAll",
-				BringAll = "BringAll",
-				RespawnAll = "RespawnAll",
-			}
-			local ownerName = map[action]
-			if ownerName then
-				local res = ownerInvoke(ownerName, {})
+	btn(actSec, "Bring", "Bring")
+	btn(actSec, "Goto", "Goto")
+	btn(actSec, "Fling", "Fling")
+	btn(actSec, "Spin", "Spin")
+	btn(actSec, "Freeze", "Freeze")
+	btn(actSec, "Unfreeze", "Unfreeze")
+	btn(actSec, "Sit", "Sit")
+	btn(actSec, "Jump", "Jump")
+	btn(actSec, "Kill", "Kill")
+	btn(actSec, "Heal", "Heal")
+	btn(actSec, "Respawn", "Respawn")
+
+	bulkSec:AddButton({
+		text = "Stop All Puppets",
+		callback = function()
+			clearAllPuppets()
+			notify("Puppets stopped", 2)
+		end,
+	})
+	bulkSec:AddButton({
+		text = "Heal All",
+		callback = function()
+			library.flags["Gakuran PS Target"] = "all"
+			if playerList and playerList.SetValue then
+				pcall(function()
+					playerList:SetValue("all", true)
+				end)
+			end
+			-- try owner bulk then client
+			if flag("Gakuran PS Prefer Owner", true) then
+				local res = ownerInvoke("HealAll", {})
 				if type(res) == "table" and res.ok == true then
-					notify((label or action) .. " ok (owner)", 2)
+					notify("Heal All ok (owner)", 2)
 					return
 				end
 			end
-		end
-
-		if not flag("Gakuran PS Public Fallback", true) then
-			notify((label or action) .. " denied", 3)
-			return
-		end
-
-		local n = 0
-		for _, plr in ipairs(Players:GetPlayers()) do
-			if action == "HealAll" then
-				if publicHeal(plr) then
-					n = n + 1
-				end
-			elseif action == "BringAll" then
-				if plr ~= LocalPlayer and publicBring(plr) then
-					n = n + 1
-				end
-			elseif action == "RespawnAll" then
-				if publicRespawn(plr) then
-					n = n + 1
+			runOnTargets("Heal", "Heal All")
+		end,
+	})
+	bulkSec:AddButton({
+		text = "Bring All",
+		callback = function()
+			if playerList and playerList.SetValue then
+				pcall(function()
+					playerList:SetValue("all", true)
+				end)
+			end
+			library.flags["Gakuran PS Target"] = "all"
+			if flag("Gakuran PS Prefer Owner", true) then
+				local res = ownerInvoke("BringAll", {})
+				if type(res) == "table" and res.ok == true then
+					notify("Bring All ok (owner)", 2)
+					return
 				end
 			end
-		end
-		notify((label or action) .. " public x" .. tostring(n), 2)
-	end
+			runOnTargets("Bring", "Bring All")
+		end,
+	})
+
+	-- Refresh list --------------------------------------------------------
 
 	function st.refresh()
-		local owner = st.ownerOk
-		if owner == nil then
-			-- don't spam Heal probe every refresh — light check only
-			local rf = getOwnerRemote()
-			local psId = ""
-			pcall(function()
-				psId = tostring(game.PrivateServerId or "")
-			end)
-			if rf and psId ~= "" then
-				setAccessText("vip remote present · public fallback on")
-			elseif rf then
-				setAccessText("public · owner remote locked · client fallback")
-			else
-				setAccessText("public client only")
-			end
-		elseif owner then
-			setAccessText("owner authorized")
+		local rf = getRemote("OwnerCommands")
+		local psId = ""
+		pcall(function()
+			psId = tostring(game.PrivateServerId or "")
+		end)
+		if rf and psId ~= "" then
+			setAccess("vip · owner remote + client puppet")
+		elseif rf then
+			setAccess("public · client puppet (owner locked)")
 		else
-			setAccessText("public client fallback")
+			setAccess("public client puppet only")
 		end
 
 		if not playerList or type(playerList.values) ~= "table" then
 			return
 		end
 
-		local labels = {}
-		st.nameToUserId = {}
-		local list = Players:GetPlayers()
-		table.sort(list, function(a, b)
+		local labels = { "all" }
+		st.nameToUserId = { all = -1 }
+		local plist = Players:GetPlayers()
+		table.sort(plist, function(a, b)
 			return string.lower(a.Name) < string.lower(b.Name)
 		end)
-		for i = 1, #list do
-			local plr = list[i]
+		for i = 1, #plist do
+			local plr = plist[i]
 			local label = playerLabel(plr)
 			if label then
 				labels[#labels + 1] = label
 				st.nameToUserId[label] = plr.UserId
 			end
 		end
-		if #labels == 0 then
-			labels[1] = "(none)"
+		if #labels == 1 then
+			labels[#labels + 1] = "(none)"
 		end
 
 		local keep = {}
@@ -493,7 +684,7 @@ return function(ctx)
 			keep[labels[i]] = true
 		end
 
-		if type(playerList.RemoveValue) == "function" and type(playerList.AddValue) == "function" then
+		if type(playerList.AddValue) == "function" and type(playerList.RemoveValue) == "function" then
 			local existing = {}
 			for i = 1, #playerList.values do
 				existing[i] = playerList.values[i]
@@ -513,112 +704,36 @@ return function(ctx)
 					end)
 				end
 			end
-			local current = library.flags["Gakuran PS Target"]
-			if type(current) ~= "string" or not keep[current] then
+			local cur = library.flags["Gakuran PS Target"]
+			if type(cur) ~= "string" or not keep[cur] then
 				if type(playerList.SetValue) == "function" then
 					pcall(function()
 						playerList:SetValue(labels[1], true)
 					end)
 				else
 					library.flags["Gakuran PS Target"] = labels[1]
-					playerList.value = labels[1]
 				end
 			end
 		end
 	end
-
-	local function withTarget(fn)
-		local uid = selectedUserId()
-		if not uid then
-			notify("Pick a player first", 2)
-			return
-		end
-		local plr = playerByUserId(uid)
-		if not plr then
-			notify("Player left", 2)
-			st.refresh()
-			return
-		end
-		fn(plr)
-	end
-
-	actSec:AddButton({
-		text = "Bring",
-		callback = function()
-			withTarget(function(plr)
-				runAction("Bring", plr, "Bring")
-			end)
-		end,
-	})
-	actSec:AddButton({
-		text = "Goto",
-		callback = function()
-			withTarget(function(plr)
-				runAction("Goto", plr, "Goto")
-			end)
-		end,
-	})
-	actSec:AddButton({
-		text = "Heal",
-		callback = function()
-			withTarget(function(plr)
-				runAction("Heal", plr, "Heal")
-			end)
-		end,
-	})
-	actSec:AddButton({
-		text = "Respawn",
-		callback = function()
-			withTarget(function(plr)
-				runAction("Respawn", plr, "Respawn")
-			end)
-		end,
-	})
-
-	bulkSec:AddButton({
-		text = "Heal All",
-		callback = function()
-			runBulk("HealAll", "Heal All")
-		end,
-	})
-	bulkSec:AddButton({
-		text = "Bring All",
-		callback = function()
-			runBulk("BringAll", "Bring All")
-		end,
-	})
-	bulkSec:AddButton({
-		text = "Respawn All",
-		callback = function()
-			runBulk("RespawnAll", "Respawn All")
-		end,
-	})
 
 	local function setup()
+		ensurePuppetLoop()
 		task.defer(function()
-			if ctx.state.unloading then
-				return
+			if not ctx.state.unloading then
+				pcall(st.refresh)
 			end
-			pcall(st.refresh)
-			-- one quiet owner probe (may heal you if authorized — rare)
-			task.delay(1.2, function()
-				if ctx.state.unloading then
-					return
-				end
-				pcall(function()
-					refreshOwnerStatus()
-					st.refresh()
-				end)
-			end)
 		end)
-
 		if type(ctx.addConnection) == "function" then
 			ctx.addConnection(Players.PlayerAdded, function()
 				task.defer(function()
 					pcall(st.refresh)
 				end)
 			end)
-			ctx.addConnection(Players.PlayerRemoving, function()
+			ctx.addConnection(Players.PlayerRemoving, function(p)
+				if p then
+					clearPuppet(p.UserId)
+				end
 				task.defer(function()
 					pcall(st.refresh)
 				end)
@@ -628,7 +743,16 @@ return function(ctx)
 
 	if type(library.AddCleanup) == "function" then
 		library:AddCleanup(function()
-			table.clear(st.nameToUserId)
+			clearAllPuppets()
+			if st.puppetConn then
+				pcall(function()
+					st.puppetConn:Disconnect()
+				end)
+				st.puppetConn = nil
+			end
+			pcall(function()
+				st.spectate(false)
+			end)
 		end)
 	end
 
