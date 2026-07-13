@@ -10,7 +10,14 @@
 
     Grade weights control the *intended* judgment. hitAt is always kept inside
     the rolled grade band. Lane conflicts shorten previous taps — they never
-    shove the next note into a worse band (that caused OKAY streaks at weight 1).
+    shove the next note into a worse band.
+
+    v2 stability changes:
+      • never marks _laneKeyDown before RhythmEngine sees the press
+      • dual-phase scheduler (Heartbeat + RenderStepped)
+      • frame-lag compensation learned from real press lateness
+      • unexpected-miss recovery temporarily favors safe PERFECT hits
+      • lane re-arm verification/retry for dense same-lane patterns
 
     NO getgc. Session via getloadedmodules → RhythmServiceClient._session only.
 ]]
@@ -41,7 +48,19 @@ return function(ctx)
 		state = true,
 		tip = "Holds use tight PERFECT/GOOD heads + full tail (no early release)",
 	})
-	core:AddLabel("Weights = intended judgments · holds never early-release")
+	core:AddToggle({
+		text = "Adaptive Timing",
+		flag = "Gakuran Rhythm Adaptive Timing",
+		state = true,
+		tip = "Learns frame delay and presses slightly ahead to cancel scheduler lateness",
+	})
+	core:AddToggle({
+		text = "Miss Guard",
+		flag = "Gakuran Rhythm Miss Guard",
+		state = true,
+		tip = "Unexpected misses trigger a short recovery period with safer timing",
+	})
+	core:AddLabel("Weights = intended judgments · system misses are auto-corrected")
 
 	local grades = columns.rhythmLeft:AddSection("Grade Mix")
 	grades:AddLabel("Weights auto-normalize · rare grades anti-streak")
@@ -125,6 +144,16 @@ return function(ctx)
 		suffix = " ms",
 		tip = "Keep key down after hold end (engine auto-scores at end)",
 	})
+	feel:AddSlider({
+		text = "Maximum Auto Lead",
+		flag = "Gakuran Rhythm Max Lead Ms",
+		min = 2,
+		max = 20,
+		value = 12,
+		float = 1,
+		suffix = " ms",
+		tip = "Upper limit for learned frame-delay compensation",
+	})
 
 	local presets = columns.rhythmRight:AddSection("Presets")
 	local function setFlag(name, value)
@@ -204,6 +233,7 @@ return function(ctx)
 	ctx.refs.rhythmMode = debugSection:AddLabel("Mode: —")
 	ctx.refs.rhythmWindows = debugSection:AddLabel("Windows: —")
 	ctx.refs.rhythmHolds = debugSection:AddLabel("Holds: —")
+	ctx.refs.rhythmTiming = debugSection:AddLabel("Timing: —")
 	ctx.refs.rhythmMix = debugSection:AddLabel("Mix: —")
 
 	-- State --------------------------------------------------------------
@@ -222,6 +252,15 @@ return function(ctx)
 	st.gradeActual = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
 	st.recentGrades = {}
 	st.lastNow = nil
+	st.frameDt = 1 / 60
+	st.schedulerLateMs = 0
+	st.adaptiveLeadMs = 3
+	st.recoveryUntil = 0
+	st.unexpectedMisses = 0
+	st.intentionalMissBudget = 0
+	st.lastJudgeMiss = nil
+	st.lastSuccessfulPressAt = 0
+	st.processBusy = false
 
 	local DEFAULT_WINDOWS = { PERFECT = 43, GOOD = 76, OKAY = 106, BAD = 140 }
 	local GRADE_ORDER = { "PERFECT", "GOOD", "OKAY", "BAD", "MISS" }
@@ -238,6 +277,33 @@ return function(ctx)
 
 	local function numFlag(name, default)
 		return tonumber(flag(name, default)) or default
+	end
+
+	local function currentLeadMs()
+		if not flag("Gakuran Rhythm Adaptive Timing", true) then
+			return 0
+		end
+		local maximum = math.clamp(numFlag("Gakuran Rhythm Max Lead Ms", 12), 2, 20)
+		local learned = tonumber(st.adaptiveLeadMs) or 3
+		if (tonumber(st.recoveryUntil) or 0) > (tonumber(st.lastNow) or 0) then
+			learned = learned + 2
+		end
+		return math.clamp(learned, 0, maximum)
+	end
+
+	local function observePressLateness(now, plan)
+		if not flag("Gakuran Rhythm Adaptive Timing", true) or not plan then
+			return
+		end
+		local target = tonumber(plan.hitAt)
+		if not target then
+			return
+		end
+		local lateMs = math.max(0, (now - target) * 1000)
+		st.schedulerLateMs = (tonumber(st.schedulerLateMs) or 0) * 0.82 + lateMs * 0.18
+		local maximum = math.clamp(numFlag("Gakuran Rhythm Max Lead Ms", 12), 2, 20)
+		local desired = math.clamp(2 + st.schedulerLateMs * 0.72, 2, maximum)
+		st.adaptiveLeadMs = (tonumber(st.adaptiveLeadMs) or 3) * 0.90 + desired * 0.10
 	end
 
 	local function debugLog(...)
@@ -274,13 +340,14 @@ return function(ctx)
 	end
 
 	local function hardenSession(session)
-		if type(session) ~= "table" or session.__xhRhythmHoldFix then
+		-- Older builds replaced _reconcileStaleKeyboardReleases with a no-op.
+		-- That can leave RhythmEngine in a poisoned state and make later presses
+		-- disappear. We only identify the session here; owned lanes are protected
+		-- through _laneTouchActive instead.
+		if type(session) ~= "table" then
 			return
 		end
 		session.__xhRhythmHoldFix = true
-		if type(session._reconcileStaleKeyboardReleases) == "function" then
-			session._reconcileStaleKeyboardReleases = function() end
-		end
 	end
 
 	local function getSession()
@@ -388,6 +455,10 @@ return function(ctx)
 
 	-- Quota + anti-streak: rare grades (e.g. OKAY=1) won't clump in a row.
 	local function pickGrade(isHold)
+		if flag("Gakuran Rhythm Miss Guard", true)
+			and (tonumber(st.recoveryUntil) or 0) > (tonumber(st.lastNow) or 0) then
+			return "PERFECT"
+		end
 		local w = rawWeights(isHold)
 		local totalW = 0
 		for _, name in ipairs(GRADE_ORDER) do
@@ -515,8 +586,10 @@ return function(ctx)
 			if type(session._laneTouchActive) == "table" then
 				session._laneTouchActive[lane] = on and true or false
 			end
-			if on and type(session._laneKeyDown) == "table" then
-				session._laneKeyDown[lane] = true
+			-- Critical: never set _laneKeyDown=true before _handleLanePress.
+			-- RhythmEngine commonly uses that field as its duplicate-input guard.
+			if not on and type(session._laneKeyDown) == "table" then
+				session._laneKeyDown[lane] = false
 			end
 		end)
 	end
@@ -625,17 +698,39 @@ return function(ctx)
 			end
 		end
 
-		latchLane(session, lane, true)
+		-- Protect the lane from stale-release cleanup, but leave _laneKeyDown
+		-- untouched until RhythmEngine processes the press itself.
+		pcall(function()
+			if type(session._laneTouchActive) == "table" then
+				session._laneTouchActive[lane] = true
+			end
+		end)
 		local ok, err = pcall(function()
 			session:_handleLanePress(lane)
 		end)
 		if not ok then
 			latchLane(session, lane, false)
 			debugLog("press fail", err)
-			plan.hitAt = now + 0.008
+			plan.hitAt = now + 0.004
 			return false
 		end
+
+		-- Some engine builds can ignore the first call during a same-lane re-arm.
+		-- Verify state and retry once without pre-marking the lane as down.
+		local registered = true
+		if type(session._laneKeyDown) == "table" then
+			registered = session._laneKeyDown[lane] == true
+		end
+		if not registered and type(note) == "table" and not note.hit and not note.attempted then
+			pcall(function()
+				if type(session._laneKeyDown) == "table" then
+					session._laneKeyDown[lane] = false
+				end
+				session:_handleLanePress(lane)
+			end)
+		end
 		latchLane(session, lane, true)
+		observePressLateness(now, plan)
 
 		plan.pressed = true
 		plan.pressedAt = now
@@ -689,6 +784,7 @@ return function(ctx)
 					released = false,
 				}
 				st.skips = (st.skips or 0) + 1
+				st.intentionalMissBudget = (st.intentionalMissBudget or 0) + 1
 				return
 			end
 		end
@@ -709,7 +805,11 @@ return function(ctx)
 			end
 		end
 
-		local hitAt = note.t + offsetMs / 1000
+		-- Compensate for frame scheduling delay. The final clamp below keeps the
+		-- result inside the chosen judgment band, so this cannot silently turn a
+		-- PERFECT/GOOD plan into a worse grade.
+		local leadMs = grade == "MISS" and 0 or currentLeadMs()
+		local hitAt = note.t + (offsetMs - leadMs) / 1000
 		local holdEnd = isHold and (note.t + len) or nil
 		local holdExtra = math.clamp(numFlag("Gakuran Rhythm Hold Extra Ms", 25), 10, 80) / 1000
 		local tapLen = math.clamp(numFlag("Gakuran Rhythm Tap Length", 40), 20, 100) / 1000
@@ -844,6 +944,12 @@ return function(ctx)
 			st.gradeRolls = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
 			st.gradeActual = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
 			st.recentGrades = {}
+			st.intentionalMissBudget = 0
+			st.lastJudgeMiss = nil
+			st.unexpectedMisses = 0
+			st.recoveryUntil = 0
+			st.schedulerLateMs = 0
+			st.adaptiveLeadMs = 3
 			local p = session._playable
 			local title = type(p) == "table" and tostring(p.title or p.songId or "") or ""
 			local mode = type(p) == "table" and tostring(p.mode or "?") or "?"
@@ -858,6 +964,34 @@ return function(ctx)
 			debugLog("seek/rewind")
 		end
 		st.lastNow = now
+
+		-- Distinguish intentional weighted misses from actual system misses.
+		-- Unexpected misses trigger a short safe-timing recovery and increase
+		-- learned lead slightly, instead of letting one bad frame snowball.
+		local counts = session._judgeCounts
+		local missCount = counts and tonumber(counts.MISS)
+		if missCount then
+			if st.lastJudgeMiss == nil then
+				st.lastJudgeMiss = missCount
+			elseif missCount > st.lastJudgeMiss then
+				local delta = missCount - st.lastJudgeMiss
+				local intentional = math.min(delta, tonumber(st.intentionalMissBudget) or 0)
+				st.intentionalMissBudget = math.max(0, (tonumber(st.intentionalMissBudget) or 0) - intentional)
+				local unexpected = delta - intentional
+				if unexpected > 0 then
+					st.unexpectedMisses = (st.unexpectedMisses or 0) + unexpected
+					if flag("Gakuran Rhythm Miss Guard", true) then
+						st.recoveryUntil = now + 3.5
+						st.adaptiveLeadMs = math.min(
+							math.clamp(numFlag("Gakuran Rhythm Max Lead Ms", 12), 2, 20),
+							(tonumber(st.adaptiveLeadMs) or 3) + 1.5
+						)
+					end
+					debugLog("unexpected miss", unexpected, "lead", string.format("%.1f", st.adaptiveLeadMs or 0))
+				end
+				st.lastJudgeMiss = missCount
+			end
+		end
 
 		local windows = getWindows(session)
 		local lookahead = math.clamp(numFlag("Gakuran Rhythm Lookahead", 900), 300, 1500) / 1000
@@ -979,8 +1113,8 @@ return function(ctx)
 			end
 		end)
 
-		ctx.addConnection(RunService.Heartbeat, function(dt)
-			if ctx.state.unloading then
+		local function schedulerStep(dt, phase)
+			if ctx.state.unloading or st.processBusy then
 				return
 			end
 			if not flag("Gakuran Auto Rhythm", false) then
@@ -991,8 +1125,13 @@ return function(ctx)
 			end
 
 			dt = tonumber(dt) or 0
-			statusAccum = statusAccum + dt
-			resolveAccum = resolveAccum + dt
+			if dt > 0 and dt < 0.25 then
+				st.frameDt = (tonumber(st.frameDt) or dt) * 0.90 + dt * 0.10
+			end
+			if phase == "heartbeat" then
+				statusAccum = statusAccum + dt
+				resolveAccum = resolveAccum + dt
+			end
 
 			local session, service = getSession()
 			if not session then
@@ -1006,7 +1145,9 @@ return function(ctx)
 				return
 			end
 
+			st.processBusy = true
 			local ok, err = pcall(process, session, service)
+			st.processBusy = false
 			if not ok then
 				debugLog("err", err)
 				if statusAccum >= 1 then
@@ -1032,6 +1173,18 @@ return function(ctx)
 						tostring(session._combo)
 					)
 				)
+				local recovering = (tonumber(st.recoveryUntil) or 0) > (tonumber(st.lastNow) or 0)
+				setLabel(
+					"rhythmTiming",
+					"Timing: ",
+					string.format(
+						"lead %.1fms · late %.1fms · %s · uM%d",
+						currentLeadMs(),
+						tonumber(st.schedulerLateMs) or 0,
+						recovering and "RECOVERY" or "stable",
+						tonumber(st.unexpectedMisses) or 0
+					)
+				)
 				local r = st.gradeRolls
 				local tw = rawWeights(false)
 				local sum = tw.PERFECT + tw.GOOD + tw.OKAY + tw.BAD + tw.MISS
@@ -1053,12 +1206,23 @@ return function(ctx)
 					)
 				)
 			end
+		end
+
+		-- Heartbeat sees newly activated notes after simulation; RenderStepped gives
+		-- a second chance in the same frame on clients where session updates happen
+		-- later than our Heartbeat connection. process() is idempotent per plan.
+		ctx.addConnection(RunService.Heartbeat, function(dt)
+			schedulerStep(dt, "heartbeat")
+		end)
+		ctx.addConnection(RunService.RenderStepped, function(dt)
+			schedulerStep(dt, "render")
 		end)
 
 		setLabel("rhythmStatus", "Status: ", "idle")
 		setLabel("rhythmMode", "Mode: ", "—")
 		setLabel("rhythmWindows", "Windows: ", "—")
 		setLabel("rhythmHolds", "Holds: ", "—")
+		setLabel("rhythmTiming", "Timing: ", "—")
 		setLabel("rhythmMix", "Mix: ", "—")
 	end
 
