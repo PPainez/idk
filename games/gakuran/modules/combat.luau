@@ -667,13 +667,15 @@ return function(ctx)
 			restoreMove = forceBackMove(character)
 		end
 
-		local ok, err = pcall(evasive.Evasive)
+		local ok, result = pcall(evasive.Evasive)
 		if restoreMove then
 			-- Keep back input for a frame so LinearVelocity samples MoveDirection.
 			task.delay(0.05, restoreMove)
 		end
 
-		if ok then
+		-- Evasive() may return false on CD without erroring — treat that as fail
+		local success = ok and result ~= false
+		if success then
 			st.lastDodgeAt = os.clock()
 			setStatus("dodged · " .. tostring(reason or "rear"))
 			debugLog("dodge", reason, opts.forceBack and "back" or "")
@@ -687,7 +689,7 @@ return function(ctx)
 			return true
 		end
 
-		debugLog("dodge failed", err)
+		debugLog("dodge failed", ok and "returned false" or tostring(result))
 		return false
 	end
 
