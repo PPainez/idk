@@ -13,7 +13,6 @@ return function(ctx)
 	local rhythmTab = library:AddTab("Rhythm", 4)
 	local basketballTab = library:AddTab("Basketball", 5)
 	local parryTab = library:AddTab("Parry Builder", 6)
-	local psTab = library:AddTab("Server Ops", 7)
 
 	local columns = {
 		homeLeft = homeTab:AddColumn(),
@@ -28,8 +27,6 @@ return function(ctx)
 		basketballRight = basketballTab:AddColumn(),
 		parryLeft = parryTab:AddColumn(),
 		parryRight = parryTab:AddColumn(),
-		psLeft = psTab:AddColumn(),
-		psRight = psTab:AddColumn(),
 	}
 
 	local intro = columns.homeLeft:AddSection("xanhub Gakuran")
@@ -43,7 +40,6 @@ return function(ctx)
 	intro:AddLabel("Rhythm — humanized auto-play (all instruments)")
 	intro:AddLabel("Basketball — green release · rim/ball ESP")
 	intro:AddLabel("Parry Builder — animation profiles for AP")
-	intro:AddLabel("Server Ops — VIP bring/goto/heal/respawn")
 
 	local quick = columns.homeRight:AddSection("Quick Actions")
 	quick:AddButton({
@@ -107,7 +103,6 @@ return function(ctx)
 			rhythm = rhythmTab,
 			basketball = basketballTab,
 			parry = parryTab,
-			ps = psTab,
 		},
 		columns = columns,
 	}
