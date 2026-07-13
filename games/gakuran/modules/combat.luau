@@ -1019,8 +1019,9 @@ return function(ctx)
 		hakari = { 0.452, 0.472, 0.452, 0.502 },
 		karate = { 0.290, 0.327, 0.402, 0.477 },
 		kure = { 0.332, 0.332, 0.332, 0.332 },
-		muaythai = { 0.312, 0.312, 0.312, 0.312 },
-		-- base 0.2 + offsets 0.30/0.25/0.25/0.17
+		-- live config: flat 0.30 (no step offsets)
+		muaythai = { 0.30, 0.30, 0.30, 0.30 },
+		-- live scan Cramless + config base 0.2 + off 0.30/0.25/0.25/0.17
 		slugger = { 0.50, 0.45, 0.45, 0.37 },
 		striker = { 0.332, 0.332, 0.332, 0.332 },
 		wrestling = { 0.332, 0.332, 0.332, 0.332 },
@@ -1033,8 +1034,8 @@ return function(ctx)
 		hakari = 0.59,
 		karate = 0.4875,
 		kure = 0.30,
-		muaythai = 0.60,
-		slugger = 0.82,
+		muaythai = 0.60, -- config M2HitboxDelay
+		slugger = 0.82, -- config M2HitboxDelay
 		striker = 0.30,
 		wrestling = 0.525,
 	}
@@ -1712,6 +1713,24 @@ return function(ctx)
 
 		-- Primary path: match by AnimationId (remote names are almost always "Animation").
 		local entry = db:lookup(id)
+
+		-- Hold strings leave the previous M1 track playing while Combo advances.
+		-- Skip stale finishing tracks so we don't re-parry step N-1 at tpos 0.7–1.0.
+		if entry and entry.kind == "M1" then
+			local step = comboStepFromName(entry.name)
+			local combo = attackerCombo(attacker)
+			local tpos = trackTime(track)
+			if step and combo > step and tpos > 0.12 then
+				return
+			end
+			-- Prefer the active combo step's style timing when IDs/names disagree
+			if step and combo >= 1 and combo <= 4 and step ~= combo and tpos < 0.12 then
+				local alt = entryForComboStep(attacker, combo)
+				if alt then
+					entry = alt
+				end
+			end
+		end
 
 		if not entry then
 			local combatName = looksLikeCombatName(name)

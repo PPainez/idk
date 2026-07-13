@@ -299,19 +299,27 @@ local SEED = {
 	["107394966937565"] = { name = "M2EHit", kind = "M2", hitDelay = 0.30, window = 0.125 },
 	["88619229552579"] = { name = "M2Success", kind = "M2", hitDelay = 0.30, window = 0.125 },
 	["92787945841620"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
-	-- MuayThai
-	["96726284968458"] = { name = "1stM1", kind = "M1", hitDelay = 0.312, window = 0.125 },
-	["139911027872047"] = { name = "2ndM1", kind = "M1", hitDelay = 0.312, window = 0.125 },
-	["104515319350296"] = { name = "3rdM1", kind = "M1", hitDelay = 0.312, window = 0.125 },
-	["74960202100098"] = { name = "4thM1", kind = "M1", hitDelay = 0.312, window = 0.125 },
-	["137034747040618"] = { name = "M2", kind = "M2", hitDelay = 0.60, window = 0.125 },
-	-- Slugger (CombatConfig: M1 base 0.2 + offsets 0.30/0.25/0.25/0.17 → 0.50/0.45/0.45/0.37; M2 0.82)
-	["134829666925953"] = { name = "1stM1", kind = "M1", hitDelay = 0.50, window = 0.130 },
-	["104867156139010"] = { name = "2ndM1", kind = "M1", hitDelay = 0.45, window = 0.130 },
-	["112759168172605"] = { name = "3rdM1", kind = "M1", hitDelay = 0.45, window = 0.130 },
-	["114647502301740"] = { name = "4thM1", kind = "M1", hitDelay = 0.37, window = 0.130 },
-	["118943955490014"] = { name = "M2", kind = "M2", hitDelay = 0.82, window = 0.140 },
-	-- Slugger EHits (shared folder IDs with base/karate — keep as EHit)
+	-- MuayThai (CombatConfig M1HitboxDelay=0.3 flat, no per-step offsets; M2=0.6)
+	-- Folder IDs confirmed; 1stM1 live-seen on sugarsku1lz (len=1.0)
+	["96726284968458"] = { name = "1stM1", kind = "M1", hitDelay = 0.30, window = 0.15 },
+	["139911027872047"] = { name = "2ndM1", kind = "M1", hitDelay = 0.30, window = 0.15 },
+	["104515319350296"] = { name = "3rdM1", kind = "M1", hitDelay = 0.30, window = 0.15 },
+	["74960202100098"] = { name = "4thM1", kind = "M1", hitDelay = 0.30, window = 0.15 },
+	["137034747040618"] = { name = "M2", kind = "M2", hitDelay = 0.60, window = 0.16 },
+	-- MuayThai EHits (style-specific 2nd/3rd/4th differ from slugger/base)
+	["108045962864902"] = { name = "1stEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["92787945841620"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["104407197874289"] = { name = "3rdEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["85931837451298"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
+	["114511731321756"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.35, window = 0.130 },
+	-- Slugger (live scan Cramless + CombatConfig M1 base 0.2 + off 0.30/0.25/0.25/0.17)
+	-- Track lens: 1st/2nd≈1.0s, 3rd≈0.90s, 4th≈1.47s · Action4 priority · combo edge tpos≈0.02–0.08
+	["134829666925953"] = { name = "1stM1", kind = "M1", hitDelay = 0.50, window = 0.15 },
+	["104867156139010"] = { name = "2ndM1", kind = "M1", hitDelay = 0.45, window = 0.15 },
+	["112759168172605"] = { name = "3rdM1", kind = "M1", hitDelay = 0.45, window = 0.15 },
+	["114647502301740"] = { name = "4thM1", kind = "M1", hitDelay = 0.37, window = 0.15 },
+	["118943955490014"] = { name = "M2", kind = "M2", hitDelay = 0.82, window = 0.18 },
+	-- Slugger EHits (folder scrape)
 	["108045962864902"] = { name = "1stEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["90752347516770"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["122541287927198"] = { name = "3rdEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
