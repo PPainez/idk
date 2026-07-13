@@ -264,7 +264,14 @@ local SEED = {
 	["134945199381140"] = { name = "2ndM1", kind = "M1", hitDelay = 0.43, window = 0.15 },
 	["117877243065533"] = { name = "3rdM1", kind = "M1", hitDelay = 0.35, window = 0.15 },
 	["106965238908791"] = { name = "4thM1", kind = "M1", hitDelay = 0.28, window = 0.15 },
-	["131071815103338"] = { name = "M2", kind = "M2", hitDelay = 0.45, window = 0.32 },
+	-- Capoeira table-kick spin — dodgeImmediate: backdash the frame the track starts
+	["131071815103338"] = {
+		name = "M2",
+		kind = "M2",
+		hitDelay = 0.45,
+		window = 0.32,
+		dodgeImmediate = true,
+	},
 	-- Hakari (0.28+0.16/0.18/0.16/0.21 · M2 0.59)
 	["76236532060812"] = { name = "1stM1", kind = "M1", hitDelay = 0.44, window = 0.15 },
 	["74206130671324"] = { name = "2ndM1", kind = "M1", hitDelay = 0.46, window = 0.15 },

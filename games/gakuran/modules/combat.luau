@@ -159,7 +159,7 @@ return function(ctx)
 		suffix = " ms",
 		tip = "How early before M2 hitbox to dash (higher = safer). Capoeira table kick needs ~200ms+",
 	})
-	dodge:AddLabel("M2: dodge then parry · Capoeira spin dodges ~200ms early")
+	dodge:AddLabel("M2: dodge then parry · Capoeira M2 131…338 backs up instantly")
 
 	local viz = columns.combatLeft:AddSection("Combat Visualizer")
 	viz:AddToggle({
@@ -669,8 +669,9 @@ return function(ctx)
 
 		local ok, result = pcall(evasive.Evasive)
 		if restoreMove then
-			-- Keep back input for a frame so LinearVelocity samples MoveDirection.
-			task.delay(0.05, restoreMove)
+			-- Hold back input so LinearVelocity samples MoveDirection (Capoeira instant needs longer).
+			local hold = tonumber(opts.holdBack) or 0.05
+			task.delay(hold, restoreMove)
 		end
 
 		-- Evasive() may return false on CD without erroring — treat that as fail
@@ -1350,13 +1351,17 @@ return function(ctx)
 				end
 			end
 			-- Capoeira table-kick spin (live len≈1.88s)
-			if tostring(dbEntry.id) == "131071815103338" then
+			if tostring(dbEntry.id) == "131071815103338" or dbEntry.dodgeImmediate == true then
 				hitDelay = 0.45
 				window = 0.32
 			end
 		elseif cfg and cfg.M1 and type(cfg.M1.HitboxDuration) == "number" then
 			window = math.clamp(cfg.M1.HitboxDuration, 0.08, 0.22)
 		end
+
+		local isCapoeiraM2 = tostring(animId) == "131071815103338"
+			or tostring(dbEntry.id) == "131071815103338"
+			or dbEntry.dodgeImmediate == true
 
 		local profile = profileOverride(animId, dbEntry.name)
 		if profile then
@@ -1392,22 +1397,17 @@ return function(ctx)
 		-- Aim for start of perfect window (hit - window*0.35), not after contact.
 		local waitTime
 		local dodgeM2Flag = flag("Gakuran Dodge M2", false)
-		local isCapoeiraM2 = tostring(dbEntry.id) == "131071815103338"
-		if m2Attack and dodgeM2Flag then
-			-- Capoeira table kick needs more lead time (long windup, wide hit)
+		-- Capoeira M2 131071815103338: backup the instant the anim starts (no windup wait)
+		if isCapoeiraM2 then
+			waitTime = 0
+		elseif m2Attack and dodgeM2Flag then
 			local early = numFlag("Gakuran M2 Dodge Early", 200) / 1000
-			if isCapoeiraM2 then
-				early = math.max(early, 0.22) -- at least 220ms early
-			elseif hitDelay >= 0.4 then
+			if hitDelay >= 0.4 then
 				early = math.max(early, hitDelay * 0.4)
 			end
 			waitTime = math.max(0, hitDelay - early - pingComp - elapsed)
 		else
 			local contact = hitDelay - (window * 0.35) - pingComp + reaction
-			-- Capoeira M2 parry also a bit early into the long active frames
-			if isCapoeiraM2 then
-				contact = hitDelay - (window * 0.5) - pingComp + reaction
-			end
 			waitTime = contact - elapsed
 			if waitTime < 0 then
 				-- Still hittable if within active hitbox (or slightly after for lag)
@@ -1491,6 +1491,28 @@ return function(ctx)
 				isM2 = m2Attack,
 				holdSec = m2Attack and math.max(window + 0.06, 0.28) or nil,
 			}
+
+			-- Capoeira M2 131071815103338: always try force-back dash immediately on first sight.
+			-- Fires with Dodge M2, Auto Dodge, or Auto Parry (any combat response on).
+			if isCapoeiraM2 and dist <= math.max(m2Range, range) + 4 then
+				local dodged = false
+				local cd = isRetap and 0.18 or 0.04
+				if (now - (st.lastDodgeAt or 0)) >= cd then
+					dodged = doDodge(
+						isRetap and "capoeira-m2-retap" or "capoeira-m2-instant",
+						entryMeta,
+						{ forceBack = true, holdBack = 0.12 }
+					) == true
+				end
+				if dodged then
+					return
+				end
+				-- Dash CD / fail → long parry hold as backup
+				if autoParry and dist <= range + 4 then
+					doParry(entryMeta, parryOpts)
+				end
+				return
+			end
 
 			-- M2: try back-dash first, then ALWAYS fall through to parry if dodge fails
 			if dodgeM2 and m2Attack and dist <= m2Range + 1.5 then
