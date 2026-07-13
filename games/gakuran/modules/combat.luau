@@ -1061,6 +1061,24 @@ return function(ctx)
 		return combatConfigCache
 	end
 
+	-- Defined before styleHitDelay (Lua locals are not visible above their declaration)
+	local function attackerCombo(attacker)
+		local character = getCharacter(attacker)
+		if not character then
+			return 0
+		end
+		return tonumber(character:GetAttribute("Combo")) or 0
+	end
+
+	local function attackerHoldingM1(attacker)
+		local character = getCharacter(attacker)
+		if not character then
+			return false
+		end
+		return character:GetAttribute("M1Hold") == true
+			or character:GetAttribute("CombatAttacking") == true
+	end
+
 	local function comboStepFromName(name)
 		name = tostring(name or "")
 		if name:find("1st", 1, true) then
@@ -1096,7 +1114,10 @@ return function(ctx)
 		local key = attackerStyleKey(attacker)
 		local kind = dbEntry and dbEntry.kind
 		local name = tostring(dbEntry and dbEntry.name or "")
-		local step = comboStepFromName(name) or attackerCombo(attacker)
+		local step = comboStepFromName(name)
+		if not step then
+			step = attackerCombo(attacker)
+		end
 		if step < 1 or step > 4 then
 			step = 1
 		end
@@ -1201,23 +1222,6 @@ return function(ctx)
 			end)
 		end
 		return t
-	end
-
-	local function attackerCombo(attacker)
-		local character = getCharacter(attacker)
-		if not character then
-			return 0
-		end
-		return tonumber(character:GetAttribute("Combo")) or 0
-	end
-
-	local function attackerHoldingM1(attacker)
-		local character = getCharacter(attacker)
-		if not character then
-			return false
-		end
-		return character:GetAttribute("M1Hold") == true
-			or character:GetAttribute("CombatAttacking") == true
 	end
 
 	-- Hold-M1 reuses AnimationTrack instances / rewinds TimePosition.
