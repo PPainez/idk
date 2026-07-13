@@ -378,6 +378,12 @@ return function(ctx)
 			highlight = highlight,
 			infoCache = nil,
 			infoCacheAt = 0,
+			-- Static world box (not limb-AABB — limbs expand every frame)
+			stableWidth = nil,
+			stableHeight = nil,
+			stableOffsetY = nil,
+			stableChar = nil,
+			stableAt = 0,
 		}
 		espState.entries[player] = entry
 		return entry
@@ -404,105 +410,111 @@ return function(ctx)
 			and character:FindFirstChild("UpperTorso") == nil
 	end
 
-	-- WorldToViewportPoint → overlay-local coords.
-	-- xanhub ScreenGui uses IgnoreGuiInset=true and sits at AbsolutePosition (0, -insetY).
-	-- Using raw viewport pixels as offsets is wrong under shift-lock / inset GUIs.
-	-- Correct: offset = viewportPoint - overlay.AbsolutePosition.
-	local function worldToOverlay(camera, worldPos, overlay)
+	local function snap(n)
+		return math.floor((tonumber(n) or 0) + 0.5)
+	end
+
+	-- IgnoreGuiInset ScreenGui (xanhub_ui): AbsolutePosition.Y is -GuiInset (~-58).
+	-- WorldToViewportPoint is already full-viewport pixels; Position offsets on that
+	-- overlay are also full-viewport. Subtracting AbsolutePosition pushed boxes ~58px down.
+	local function worldToOverlay(camera, worldPos)
 		local sp, onScreen = camera:WorldToViewportPoint(worldPos)
 		if sp.Z <= 0.05 then
 			return nil, nil, false, sp.Z
 		end
-		local originX, originY = 0, 0
-		if overlay then
-			local abs = overlay.AbsolutePosition
-			originX = abs.X
-			originY = abs.Y
-		end
-		return sp.X - originX, sp.Y - originY, onScreen, sp.Z
+		return sp.X, sp.Y, onScreen, sp.Z
 	end
 
-	local function getCharacterBounds(camera, character, rootPart, overlay)
-		-- Prefer part bounds when possible (shift-lock skews camera-right billboard boxes)
-		local parts = {}
+	-- Fixed world-space size from height scale + HipHeight (not animated limbs).
+	local function measureStableBounds(character, rootPart)
 		local hum = character:FindFirstChildOfClass("Humanoid")
 		local r6 = isR6(character)
-		if r6 then
-			for _, name in ipairs({ "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "HumanoidRootPart" }) do
-				local p = character:FindFirstChild(name)
-				if p and p:IsA("BasePart") then
-					parts[#parts + 1] = p
-				end
-			end
-		else
-			for _, name in ipairs({
-				"Head",
-				"UpperTorso",
-				"LowerTorso",
-				"LeftUpperArm",
-				"RightUpperArm",
-				"LeftUpperLeg",
-				"RightUpperLeg",
-				"HumanoidRootPart",
-			}) do
-				local p = character:FindFirstChild(name)
-				if p and p:IsA("BasePart") then
-					parts[#parts + 1] = p
-				end
-			end
+		local pd = getPlayerData(character)
+		local scale = tonumber(attr(pd, "CurrentHeight") or attr(pd, "Height")) or 1
+		scale = math.clamp(scale, 0.75, 1.6)
+
+		local hip = hum and tonumber(hum.HipHeight) or (r6 and 0 or 2 * scale)
+		if hip <= 0 then
+			hip = r6 and 0 or 2 * scale
 		end
+
+		-- Feet: Humanoid HipHeight is ground→HRP bottom (pose-independent).
+		local hrpHalf = rootPart.Size.Y * 0.5
+		local feetBelow = hip + hrpHalf
+
+		-- Crown: clamp head relative height so idle bob can't stretch the box.
+		-- Live Gakuran R15 sits ~1.7×scale above HRP (crown), not full GetBoundingBox.
+		local head = character:FindFirstChild("Head")
+		local headHalf = (head and head:IsA("BasePart") and head.Size.Y * 0.5) or (0.5 * scale)
+		local rawHeadAbove
+		if head and head:IsA("BasePart") then
+			rawHeadAbove = (head.Position.Y - rootPart.Position.Y) + headHalf
+		else
+			rawHeadAbove = (r6 and 2.4 or 1.72) * scale
+		end
+		local lo = (r6 and 2.0 or 1.35) * scale
+		local hi = (r6 and 2.8 or 2.15) * scale
+		local headAbove = math.clamp(rawHeadAbove, lo, hi)
+
+		local height = math.clamp(feetBelow + headAbove, r6 and 4.0 or 4.4, r6 and 6.8 or 7.6)
+		local offsetY = (headAbove - feetBelow) * 0.5
+		-- Shoulder width tracks height attr (taller students → slightly wider)
+		local width = math.clamp((r6 and 1.95 or 2.05) * scale, 1.65, 3.2)
+
+		return width, height, offsetY
+	end
+
+	local function ensureStableBounds(entry, character, rootPart)
+		local now = os.clock()
+		if entry.stableChar == character
+			and entry.stableWidth
+			and entry.stableHeight
+			and (now - (entry.stableAt or 0)) < 2.5
+		then
+			return entry.stableWidth, entry.stableHeight, entry.stableOffsetY
+		end
+		local w, h, oy = measureStableBounds(character, rootPart)
+		entry.stableWidth = w
+		entry.stableHeight = h
+		entry.stableOffsetY = oy
+		entry.stableChar = character
+		entry.stableAt = now
+		return w, h, oy
+	end
+
+	-- Camera-facing billboard of FIXED stud size — no limb AABB expansion.
+	local function getCharacterBounds(camera, character, rootPart, entry)
+		local width, height, offsetY = ensureStableBounds(entry, character, rootPart)
+		local center = rootPart.Position + Vector3.new(0, offsetY, 0)
+		local worldUp = Vector3.new(0, height * 0.5, 0)
+		local cameraRight = camera.CFrame.RightVector * (width * 0.5)
+		local corners = {
+			center + worldUp - cameraRight,
+			center + worldUp + cameraRight,
+			center - worldUp - cameraRight,
+			center - worldUp + cameraRight,
+		}
 
 		local minX, minY = math.huge, math.huge
 		local maxX, maxY = -math.huge, -math.huge
-		local any = false
-
-		local function accumWorld(world)
-			local x, y, _, z = worldToOverlay(camera, world, overlay)
+		for _, world in ipairs(corners) do
+			local x, y, _, z = worldToOverlay(camera, world)
 			if not x or z <= 0.05 then
-				return false
+				return nil
 			end
 			minX = math.min(minX, x)
 			minY = math.min(minY, y)
 			maxX = math.max(maxX, x)
 			maxY = math.max(maxY, y)
-			any = true
-			return true
 		end
 
-		if #parts > 0 then
-			for _, part in ipairs(parts) do
-				local cf, size = part.CFrame, part.Size
-				local sx, sy, sz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
-				-- 8 corners of each part
-				for _, ox in ipairs({ -sx, sx }) do
-					for _, oy in ipairs({ -sy, sy }) do
-						for _, oz in ipairs({ -sz, sz }) do
-							accumWorld((cf * CFrame.new(ox, oy, oz)).Position)
-						end
-					end
-				end
-			end
-		else
-			-- Fallback billboard box around HRP
-			local width = r6 and 2.2 or 3.1
-			local height = r6 and 5.0 or 5.6
-			local offsetY = r6 and 0.15 or 0.35
-			local center = rootPart.Position + Vector3.new(0, offsetY, 0)
-			local worldUp = Vector3.new(0, height * 0.5, 0)
-			local cameraRight = camera.CFrame.RightVector * (width * 0.5)
-			accumWorld(center + worldUp - cameraRight)
-			accumWorld(center + worldUp + cameraRight)
-			accumWorld(center - worldUp - cameraRight)
-			accumWorld(center - worldUp + cameraRight)
-		end
-
-		if not any or maxX <= minX or maxY <= minY then
+		if maxX <= minX or maxY <= minY then
 			return nil
 		end
 
-		-- Small padding so labels sit cleanly outside the body
-		local pad = 2
-		return minX - pad, minY - pad, maxX + pad, maxY + pad
+		local projectedH = maxY - minY
+		local pad = math.clamp(projectedH * 0.02, 1, 4)
+		return snap(minX - pad), snap(minY - pad), snap(maxX + pad), snap(maxY + pad)
 	end
 
 	local function healthColor(ratio)
@@ -563,9 +575,8 @@ return function(ctx)
 			return
 		end
 
-		-- Project relative to this entry's overlay root (handles inset / shift-lock)
-		local overlay = entry.root
-		local minX, minY, maxX, maxY = getCharacterBounds(camera, character, rootPart, overlay)
+		-- Static camera-facing box (height-scale sized, no limb expansion)
+		local minX, minY, maxX, maxY = getCharacterBounds(camera, character, rootPart, entry)
 		if not minX then
 			hideEntry(entry)
 			return
@@ -581,6 +592,10 @@ return function(ctx)
 		local h = maxY - minY
 		local x = minX
 		local y = minY
+		if w < 3 or h < 6 then
+			hideEntry(entry)
+			return
+		end
 
 		-- Cache PlayerData text ~6.5x/sec (attrs rarely change mid-frame).
 		local now = os.clock()
@@ -591,7 +606,7 @@ return function(ctx)
 			entry.infoCacheAt = now
 		end
 
-		-- Box
+		-- Box (pixel-snapped static rect)
 		if flag("Gakuran ESP Boxes", true) then
 			entry.box.Visible = true
 			entry.box.Position = UDim2.fromOffset(x, y)
@@ -632,7 +647,7 @@ return function(ctx)
 			local ratio = math.clamp(info.stamina / math.max(info.maxStamina, 1), 0, 1)
 			local barW = 3
 			entry.stmBg.Visible = true
-			entry.stmBg.Position = UDim2.fromOffset(maxX + 3, y)
+			entry.stmBg.Position = UDim2.fromOffset(x + w + 3, y)
 			entry.stmBg.Size = UDim2.fromOffset(barW, h)
 			entry.stmFill.Size = UDim2.new(1, 0, ratio, 0)
 			entry.stmFill.BackgroundColor3 = STM
