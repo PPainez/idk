@@ -50,8 +50,12 @@ local moduleLoader = ModuleLoader.new(Http, function(path)
 	return Constants.repositoryUrls(path)
 end)
 
-if type(runtime) == "table" and runtime.forceFreshModules == true then
+-- Always clear in-process module cache so re-exec after push loads new combat/etc.
+pcall(function()
 	moduleLoader.clear()
+end)
+if type(runtime) == "table" then
+	runtime.forceFreshModules = true
 end
 
 local UI_URL = (type(runtime) == "table" and runtime.uiUrl) or Constants.uiUrl()

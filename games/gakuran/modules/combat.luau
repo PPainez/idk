@@ -1,9 +1,11 @@
 --[[
     xanhub | gakuran | combat
+    build: 20260712d
 
     Auto Parry + rear Auto Dodge + Dodge M2 (forced back dash) + attack visualizers.
     Detects known combat attack animations on nearby players, then:
       - M2 (optional) → force back MoveDirection + Evasive.Evasive()
+      - Capoeira M2 131071815103338 → instant force-back on track start
       - behind attacker → Evasive.Evasive()
       - otherwise → Block.Block() timed to PerfectBlockWindow (~0.125s)
     Visualizers: 3D world boxes on attacker (M1/M2/EHit) with charge fill synced to anim.
@@ -654,11 +656,21 @@ return function(ctx)
 		end
 
 		local character = getCharacter(LocalPlayer) or LocalPlayer.Character
-		-- Evasive refuses while Blocking / attacking.
-		if character and character:GetAttribute("Blocking") then
-			local blockApi = getBlockApi()
-			if blockApi and type(blockApi.Unblock) == "function" then
-				pcall(blockApi.Unblock)
+		-- Evasive refuses while Blocking / attacking / dodge CD.
+		if character then
+			if character:GetAttribute("Blocking") then
+				local blockApi = getBlockApi()
+				if blockApi and type(blockApi.Unblock) == "function" then
+					pcall(blockApi.Unblock)
+				end
+			end
+			if opts.forceBack or opts.clearCd then
+				pcall(function()
+					character:SetAttribute("IFRAMECD", false)
+					character:SetAttribute("IFRAMECD", nil)
+					character:SetAttribute("EvasiveDataRemaining", 0)
+					character:SetAttribute("EvasiveDataRemaining", nil)
+				end)
 			end
 		end
 
@@ -1061,13 +1073,18 @@ return function(ctx)
 		return combatConfigCache
 	end
 
-	-- Defined before styleHitDelay (Lua locals are not visible above their declaration)
+	local CAPOEIRA_M2_ID = "131071815103338"
+
 	local function attackerCombo(attacker)
 		local character = getCharacter(attacker)
 		if not character then
 			return 0
 		end
-		return tonumber(character:GetAttribute("Combo")) or 0
+		local n = tonumber(character:GetAttribute("Combo"))
+		if type(n) ~= "number" then
+			return 0
+		end
+		return n
 	end
 
 	local function attackerHoldingM1(attacker)
@@ -1081,16 +1098,16 @@ return function(ctx)
 
 	local function comboStepFromName(name)
 		name = tostring(name or "")
-		if name:find("1st", 1, true) then
+		if string.find(name, "1st", 1, true) then
 			return 1
 		end
-		if name:find("2nd", 1, true) then
+		if string.find(name, "2nd", 1, true) then
 			return 2
 		end
-		if name:find("3rd", 1, true) then
+		if string.find(name, "3rd", 1, true) then
 			return 3
 		end
-		if name:find("4th", 1, true) then
+		if string.find(name, "4th", 1, true) then
 			return 4
 		end
 		return nil
@@ -1109,109 +1126,93 @@ return function(ctx)
 		return string.lower(style)
 	end
 
+	-- Fully self-contained + never throws (old nil-upvalue bug lived here)
 	local function styleHitDelay(attacker, dbEntry, track)
-		local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
-		local key = attackerStyleKey(attacker)
-		local kind = dbEntry and dbEntry.kind
-		local name = tostring(dbEntry and dbEntry.name or "")
-		local step = comboStepFromName(name)
-		if not step then
-			step = attackerCombo(attacker)
-		end
-		if step < 1 or step > 4 then
-			step = 1
-		end
+		local ok, result = pcall(function()
+			local delay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
+			local animId = tostring((dbEntry and dbEntry.id) or "")
+			if animId == CAPOEIRA_M2_ID or (dbEntry and dbEntry.dodgeImmediate) then
+				return 0.45
+			end
 
-		local speed = 1
-		if track then
-			pcall(function()
+			local key = "default"
+			do
+				local character = getCharacter(attacker)
+				if character then
+					local pd = character:FindFirstChild("PlayerData")
+					local style = pd and (pd:GetAttribute("Style") or pd:GetAttribute("CombatStyle"))
+					if type(style) == "string" and style ~= "" then
+						key = string.lower(style)
+					end
+				end
+			end
+
+			local kind = dbEntry and dbEntry.kind
+			local name = tostring(dbEntry and dbEntry.name or "")
+
+			local step = nil
+			if string.find(name, "1st", 1, true) then
+				step = 1
+			elseif string.find(name, "2nd", 1, true) then
+				step = 2
+			elseif string.find(name, "3rd", 1, true) then
+				step = 3
+			elseif string.find(name, "4th", 1, true) then
+				step = 4
+			else
+				local character = getCharacter(attacker)
+				if character then
+					step = tonumber(character:GetAttribute("Combo")) or 0
+				end
+			end
+			if type(step) ~= "number" or step < 1 or step > 4 then
+				step = 1
+			end
+
+			local speed = 1
+			if track then
 				speed = tonumber(track.Speed) or 1
-			end)
-		end
-		if speed <= 0.05 then
-			speed = 1
-		end
+			end
+			if type(speed) ~= "number" or speed <= 0.05 then
+				speed = 1
+			end
 
-		if kind == "M2" or name:find("M2", 1, true) or name:find("Crit", 1, true) then
-			local m2 = STYLE_M2[key] or STYLE_M2.default
-			local cfg = getCombatConfig()
-			-- Prefer style table (GetStyleM2HitboxDelay call shapes are inconsistent)
-			if cfg and type(cfg.GetStyleConfig) == "function" then
-				local ok, sc = pcall(cfg.GetStyleConfig, key)
-				if not ok then
-					ok, sc = pcall(function()
-						return cfg:GetStyleConfig(key)
-					end)
+			if kind == "M2" or string.find(name, "M2", 1, true) or string.find(name, "Crit", 1, true) then
+				local m2 = STYLE_M2[key] or STYLE_M2.default or 0.45
+				local cfg = getCombatConfig()
+				if cfg and type(cfg) == "table" and type(cfg.GetStyleConfig) == "function" then
+					local sok, sc = pcall(cfg.GetStyleConfig, key)
+					if not sok then
+						sok, sc = pcall(function()
+							return cfg:GetStyleConfig(key)
+						end)
+					end
+					if sok and type(sc) == "table" and type(sc.M2HitboxDelay) == "number" then
+						m2 = sc.M2HitboxDelay
+					end
 				end
-				if ok and type(sc) == "table" and type(sc.M2HitboxDelay) == "number" then
-					m2 = sc.M2HitboxDelay
+				if animId == CAPOEIRA_M2_ID then
+					m2 = 0.45
 				end
+				return math.max(0.08, (tonumber(m2) or 0.45) / speed)
 			end
-			if cfg and type(cfg.GetStyleM2HitboxDelay) == "function" then
-				local ok, d = pcall(cfg.GetStyleM2HitboxDelay, key, name:find("Momentum", 1, true) ~= nil)
-				if ok and type(d) == "number" and d > 0.1 then
-					m2 = d
-				end
-			end
-			-- Capoeira spin kick id hard-confirm
-			if tostring(dbEntry and dbEntry.id) == "131071815103338" then
-				m2 = 0.45
-			end
-			return math.max(0.08, m2 / speed)
-		end
 
-		if kind == "EHit" or name:find("EHit", 1, true) then
+			if kind == "EHit" or string.find(name, "EHit", 1, true) then
+				return math.max(0.08, delay / speed)
+			end
+
+			local steps = STYLE_M1_STEPS[key] or STYLE_M1_STEPS.default
+			if type(steps) == "table" then
+				local d = tonumber(steps[step]) or delay
+				return math.max(0.08, d / speed)
+			end
 			return math.max(0.08, delay / speed)
-		end
+		end)
 
-		-- Prefer live CombatConfig scaled delay (base + per-step offset) / attackSpeed
-		local cfg = getCombatConfig()
-		if cfg and type(cfg.GetScaledStyleM1HitboxDelay) == "function" then
-			-- Try common call shapes (module table / colon / with speed)
-			local candidates = {
-				function()
-					return cfg.GetScaledStyleM1HitboxDelay(key, step, speed)
-				end,
-				function()
-					return cfg:GetScaledStyleM1HitboxDelay(key, step, speed)
-				end,
-				function()
-					return cfg.GetScaledStyleM1HitboxDelay(key, step)
-				end,
-				function()
-					return cfg:GetScaledStyleM1HitboxDelay(key, step)
-				end,
-			}
-			for i = 1, #candidates do
-				local ok, d = pcall(candidates[i])
-				if ok and type(d) == "number" and d > 0.05 then
-					return math.max(0.08, d / (speed > 0.05 and speed or 1))
-				end
-			end
+		if ok and type(result) == "number" and result > 0 then
+			return result
 		end
-
-		-- Manual base+offset from GetStyleConfig when scaled helper fails
-		if cfg and type(cfg.GetStyleConfig) == "function" then
-			local ok, sc = pcall(cfg.GetStyleConfig, key)
-			if not ok then
-				ok, sc = pcall(function()
-					return cfg:GetStyleConfig(key)
-				end)
-			end
-			if ok and type(sc) == "table" then
-				local base = tonumber(sc.M1HitboxDelay) or 0
-				local off = 0
-				if type(sc.M1HitboxDelayOffsets) == "table" then
-					off = tonumber(sc.M1HitboxDelayOffsets[step] or sc.M1HitboxDelayOffsets[tostring(step)]) or 0
-				end
-				if base > 0 then
-					return math.max(0.08, (base + off) / speed)
-				end
-			end
-		end
-
-		local steps = STYLE_M1_STEPS[key] or STYLE_M1_STEPS.default
-		return math.max(0.08, (steps[step] or delay) / speed)
+		return tonumber(dbEntry and dbEntry.hitDelay) or 0.32
 	end
 
 	local function trackTime(track)
@@ -1333,17 +1334,26 @@ return function(ctx)
 
 		-- Contact = CombatConfig scaled hitbox delay for this style + combo step.
 		local hitDelay = styleHitDelay(attacker, dbEntry, track)
+		if type(hitDelay) ~= "number" or hitDelay ~= hitDelay or hitDelay <= 0 then
+			hitDelay = tonumber(dbEntry and dbEntry.hitDelay) or 0.32
+		end
 		local window = tonumber(dbEntry.window) or 0.125
 		local range = numFlag("Gakuran Range Prefilter", 14)
 		local m2Attack = isM2Entry(dbEntry)
 		local hold = attackerHoldingM1(attacker) or opts.fromCombo == true
 		local styleKey = attackerStyleKey(attacker)
 		local cfg = getCombatConfig()
+		local isCapoeiraM2 = tostring(animId) == CAPOEIRA_M2_ID
+			or tostring(dbEntry and dbEntry.id) == CAPOEIRA_M2_ID
+			or dbEntry.dodgeImmediate == true
 
 		-- Hitbox duration: M1 default 0.15; Capoeira M2 uses 0.32 (style.M2HitboxDuration)
-		if m2Attack then
+		if isCapoeiraM2 then
+			hitDelay = 0.45
+			window = 0.32
+		elseif m2Attack then
 			window = math.max(window, 0.22)
-			if cfg and type(cfg.GetStyleConfig) == "function" then
+			if cfg and type(cfg) == "table" and type(cfg.GetStyleConfig) == "function" then
 				local ok, sc = pcall(cfg.GetStyleConfig, styleKey)
 				if not ok then
 					ok, sc = pcall(function()
@@ -1354,18 +1364,9 @@ return function(ctx)
 					window = math.clamp(sc.M2HitboxDuration, 0.12, 0.45)
 				end
 			end
-			-- Capoeira table-kick spin (live len≈1.88s)
-			if tostring(dbEntry.id) == "131071815103338" or dbEntry.dodgeImmediate == true then
-				hitDelay = 0.45
-				window = 0.32
-			end
-		elseif cfg and cfg.M1 and type(cfg.M1.HitboxDuration) == "number" then
+		elseif cfg and type(cfg) == "table" and cfg.M1 and type(cfg.M1.HitboxDuration) == "number" then
 			window = math.clamp(cfg.M1.HitboxDuration, 0.08, 0.22)
 		end
-
-		local isCapoeiraM2 = tostring(animId) == "131071815103338"
-			or tostring(dbEntry.id) == "131071815103338"
-			or dbEntry.dodgeImmediate == true
 
 		local profile = profileOverride(animId, dbEntry.name)
 		if profile then
@@ -1498,20 +1499,19 @@ return function(ctx)
 
 			-- Capoeira M2 131071815103338: always try force-back dash immediately on first sight.
 			-- Fires with Dodge M2, Auto Dodge, or Auto Parry (any combat response on).
-			if isCapoeiraM2 and dist <= math.max(m2Range, range) + 4 then
+			if isCapoeiraM2 and dist <= math.max(m2Range, range) + 6 then
 				local dodged = false
-				local cd = isRetap and 0.18 or 0.04
+				local cd = isRetap and 0.18 or 0.03
 				if (now - (st.lastDodgeAt or 0)) >= cd then
 					dodged = doDodge(
 						isRetap and "capoeira-m2-retap" or "capoeira-m2-instant",
 						entryMeta,
-						{ forceBack = true, holdBack = 0.12 }
+						{ forceBack = true, holdBack = 0.14, clearCd = true }
 					) == true
 				end
 				if dodged then
 					return
 				end
-				-- Dash CD / fail → long parry hold as backup
 				if autoParry and dist <= range + 4 then
 					doParry(entryMeta, parryOpts)
 				end
@@ -1853,6 +1853,36 @@ return function(ctx)
 			attackerHoldingM1(attacker) and "HOLD" or "",
 			"c" .. tostring(attackerCombo(attacker))
 		)
+
+		-- Capoeira M2: force-back dash RIGHT NOW (do not wait for schedule timers)
+		if pure == CAPOEIRA_M2_ID
+			or tostring(entry.id) == CAPOEIRA_M2_ID
+			or entry.dodgeImmediate == true
+		then
+			if combatFeaturesOn() then
+				local now = os.clock()
+				if (now - (st.lastDodgeAt or 0)) >= 0.03 and dist <= math.max(parryRange, 18) + 2 then
+					local meta = {
+						name = entry.name or "CapoeiraM2",
+						kind = "M2",
+						attackerName = attacker.DisplayName or attacker.Name,
+						_attackerName = attacker.DisplayName or attacker.Name,
+					}
+					local dodged = doDodge("capoeira-m2-on-start", meta, {
+						forceBack = true,
+						holdBack = 0.14,
+						clearCd = true,
+					})
+					if dodged then
+						debugLog("capoeira instant backup OK", attacker.Name)
+						-- still schedule for retap/parry fallback later
+					else
+						debugLog("capoeira instant backup failed", attacker.Name)
+					end
+				end
+			end
+		end
+
 		scheduleResponse(attacker, track, entry)
 	end
 
