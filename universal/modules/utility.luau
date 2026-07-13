@@ -1,7 +1,7 @@
 --[[
     xanhub | universal | utility module
 
-    Quality-of-life toggles and server utilities.
+    Quality-of-life toggles and server utilities with complete restoration.
 ]]
 
 return function(ctx)
@@ -13,7 +13,14 @@ return function(ctx)
 		callback = function()
 			local humanoid = ctx.getHumanoid()
 			if humanoid then
-				humanoid.Health = 0
+				local ok, err = pcall(function()
+					humanoid.Health = 0
+				end)
+				if not ok then
+					ctx.notify("Reset failed: " .. tostring(err), 3)
+				end
+			else
+				ctx.notify("Character is unavailable", 2)
 			end
 		end,
 	})
@@ -28,12 +35,21 @@ return function(ctx)
 	serverSection:AddButton({
 		text = "Rejoin Current Server",
 		callback = function()
-			pcall(function()
+			ctx.notify("Rejoining current server...", 2)
+			local ok, err = pcall(function()
 				ctx.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, ctx.LocalPlayer)
 			end)
+			if not ok then
+				local fallbackOk, fallbackErr = pcall(function()
+					ctx.TeleportService:Teleport(game.PlaceId, ctx.LocalPlayer)
+				end)
+				if not fallbackOk then
+					ctx.notify("Rejoin failed: " .. tostring(fallbackErr or err), 4)
+				end
+			end
 		end,
 	})
-	serverSection:AddLabel("Featured games are configured in main/loader.luau")
+	serverSection:AddLabel("Featured games are configured in loader.luau")
 
 	local function setupUtilityRuntime()
 		local antiAfkConnection
@@ -55,17 +71,42 @@ return function(ctx)
 			end
 		end
 
+		local function stopAntiAfk()
+			ctx.disconnect(antiAfkConnection)
+			antiAfkConnection = nil
+		end
+
+		local function setAntiAfk(enabled)
+			stopAntiAfk()
+			if enabled ~= true then
+				return
+			end
+
+			antiAfkConnection = ctx.addConnection(ctx.LocalPlayer.Idled, function()
+				pcall(function()
+					ctx.VirtualUser:CaptureController()
+					ctx.VirtualUser:ClickButton2(Vector2.new(0, 0))
+				end)
+			end)
+		end
+
 		local antiAfkOption = ctx.option("Universal Anti AFK")
 		if antiAfkOption then
-			antiAfkOption.callback = function(enabled)
-				ctx.disconnect(antiAfkConnection)
-				antiAfkConnection = nil
-				if enabled then
-					antiAfkConnection = ctx.LocalPlayer.Idled:Connect(function()
-						pcall(function()
-							ctx.VirtualUser:CaptureController()
-							ctx.VirtualUser:ClickButton2(Vector2.new(0, 0))
-						end)
+			local previousCallback = antiAfkOption.callback
+			antiAfkOption.callback = function(enabled, ...)
+				if type(previousCallback) == "function" then
+					pcall(previousCallback, enabled, ...)
+				end
+				setAntiAfk(enabled)
+			end
+		end
+
+		local function setCoreHidden(hidden)
+			for _, coreType in ipairs(coreTypes) do
+				local restore = coreOriginal[coreType]
+				if restore ~= nil then
+					pcall(function()
+						ctx.StarterGui:SetCoreGuiEnabled(coreType, hidden and false or restore)
 					end)
 				end
 			end
@@ -73,24 +114,32 @@ return function(ctx)
 
 		local coreOption = ctx.option("Universal Hide CoreGui")
 		if coreOption then
-			coreOption.callback = function(hidden)
-				for _, coreType in ipairs(coreTypes) do
-					pcall(function()
-						ctx.StarterGui:SetCoreGuiEnabled(coreType, hidden and false or coreOriginal[coreType])
-					end)
+			local previousCallback = coreOption.callback
+			coreOption.callback = function(hidden, ...)
+				if type(previousCallback) == "function" then
+					pcall(previousCallback, hidden, ...)
 				end
+				setCoreHidden(hidden == true)
 			end
 		end
 
+		-- Respect config-autoloaded values even when the control callback ran before
+		-- this module's runtime was attached.
+		setAntiAfk(ctx.library.flags["Universal Anti AFK"] == true)
+		setCoreHidden(ctx.library.flags["Universal Hide CoreGui"] == true)
+
 		ctx.library:AddCleanup(function()
-			ctx.disconnect(antiAfkConnection)
+			stopAntiAfk()
 			for _, coreType in ipairs(coreTypes) do
-				pcall(function()
-					ctx.StarterGui:SetCoreGuiEnabled(coreType, coreOriginal[coreType])
-				end)
+				local restore = coreOriginal[coreType]
+				if restore ~= nil then
+					pcall(function()
+						ctx.StarterGui:SetCoreGuiEnabled(coreType, restore)
+					end)
+				end
 			end
 		end)
 	end
 
-	return { setup = setupUtilityRuntime }
+	return {setup = setupUtilityRuntime}
 end

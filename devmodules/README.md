@@ -19,6 +19,25 @@ Drop this entire `devmodules` folder in the repository root:
 
 ## Included modules
 
+
+### Notification Center
+
+A theme-matched stacked notification service for debug messages, moderation notices, progress jobs, warnings, errors, and module status. It supports priorities, sticky notices, dedupe keys, grouped duplicate counts, action buttons, hover pause, configurable corners, overflow queues, searchable history, JSON export, and complete unload cleanup.
+
+```lua
+local notices = ctx.devtools.apis.notifications
+notices:Debug("Animator scan started", {channel = "animation"})
+notices:Mod("Moderator present", {sticky = true, key = "staff-present"})
+
+local progress = notices:Progress({title = "Scan", message = "Starting..."})
+progress:SetProgress(0.5, "Halfway done")
+progress:Complete("Finished")
+```
+
+### Runtime Diagnostics
+
+Summarizes build metadata, uptime, executor, FPS, worst frame, memory, ping, UI-root count, tracked connections, ESP entries, notification counts, source-cache statistics, slow modules, and isolated startup errors. It provides a copyable health report and can refresh automatically.
+
 ### Animation Logger
 
 Captures `Animator.AnimationPlayed` from self, players, and NPCs. It supports capture range, source filtering, deduplication, blacklist persistence, searchable history, JSON export, source-path copying, track metadata, and direct Animation Viewer integration.
@@ -132,3 +151,24 @@ logger:Blacklist("123456789", true)
 ```
 
 All modules register cleanup through the xanhub library and remove their windows, connections, cloned rigs, event objects, and overlays during unload.
+
+## Notification API
+
+```lua
+local notices = ctx.devtools.apis.notifications
+notices:Info("Ready")
+notices:Success("Saved", {channel = "config", key = "save-status"})
+notices:Warning("High frame time", {duration = 6})
+notices:Error("Module failed", {sticky = true})
+notices:Open()
+```
+
+## Runtime Diagnostics API
+
+```lua
+local diagnostics = ctx.devtools.apis.runtimeDiagnostics
+local snapshot = diagnostics:Snapshot()
+print(diagnostics:Format(snapshot))
+diagnostics:Copy()
+diagnostics:Open()
+```

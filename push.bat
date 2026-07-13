@@ -53,6 +53,13 @@ git fetch origin
 if errorlevel 1 goto :fail
 
 echo.
+echo [build] Updating build manifest...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\update-build.ps1"
+if errorlevel 1 goto :fail
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\verify-build.ps1"
+if errorlevel 1 goto :fail
+
+echo.
 echo [stage] Adding all files...
 git add -A
 if errorlevel 1 goto :fail

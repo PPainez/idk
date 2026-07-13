@@ -36,7 +36,10 @@ return function(ctx)
 	intro:AddLabel("Loaded for: " .. tostring(game.Name))
 	intro:AddLabel("Place ID: " .. tostring(game.PlaceId))
 	intro:AddLabel("Universe ID: " .. tostring(game.GameId))
-	intro:AddLabel("Signature ESP · Targeting · Combat Aim · Movement")
+	local buildRevision = ctx.runtime and ctx.runtime.buildRevision
+	local buildVersion = ctx.runtime and ctx.runtime.buildVersion or "unknown"
+	intro:AddLabel("Build: " .. tostring(buildVersion) .. " · " .. (buildRevision and string.sub(buildRevision, 1, 10) or "local"))
+	intro:AddLabel("Signature ESP · Targeting · Movement · Developer tools")
 	intro:AddLabel("General client tools with complete unload restoration")
 
 	local quick = columns.homeRight:AddSection("Quick Actions")
@@ -69,6 +72,19 @@ return function(ctx)
 
 	local runtimeSection = columns.homeRight:AddSection("Runtime")
 	ctx.refs.runtimeStatus = runtimeSection:AddLabel("Status: initializing")
+	runtimeSection:AddButton({
+		text = "Copy Build Info",
+		callback = function()
+			local runtime = ctx.runtime or {}
+			ctx.safeClipboard(string.format(
+				"xanhub build=%s revision=%s loader=%s place=%s",
+				tostring(runtime.buildVersion or "unknown"),
+				tostring(runtime.buildRevision or "local"),
+				tostring(runtime.loaderVersion or "standalone"),
+				tostring(game.PlaceId)
+			))
+		end,
+	})
 	runtimeSection:AddButton({
 		text = "Print Active Flags",
 		callback = function()

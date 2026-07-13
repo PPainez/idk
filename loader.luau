@@ -20,8 +20,94 @@ local UI_URL = REPOSITORY_ROOT .. "/ui.luau"
 local MAIN_ROOT = REPOSITORY_ROOT
 local UNIVERSAL_URL = REPOSITORY_ROOT .. "/universal.luau"
 
+local function safeTraceback(err)
+	local message = tostring(err)
+	if type(debug) == "table" and type(debug.traceback) == "function" then
+		local ok, result = pcall(debug.traceback, message, 2)
+		if ok and type(result) == "string" then
+			return result
+		end
+	end
+	return message
+end
+
+local function bootstrapBodyValid(body)
+	if type(body) ~= "string" or #body < 20 then
+		return false
+	end
+	body = body:gsub("^\239\187\191", "")
+	local prefix = string.lower(string.sub(body:match("^%s*(.*)") or body, 1, 180))
+	return not (
+		prefix == "404: not found"
+		or string.match(prefix, "^404[:%s]")
+		or string.match(prefix, "^<!doctype%s+html")
+		or string.match(prefix, "^<html")
+		or string.match(prefix, "^repository%s+not%s+found")
+	)
+end
+
+local function bootstrapSummary(value)
+	local text = tostring(value or "empty response"):gsub("%s+", " ")
+	return #text > 180 and (string.sub(text, 1, 180) .. "...") or text
+end
+
+local function bootstrapRequest(path)
+	path = tostring(path):gsub("^/+", "")
+	local urls = {
+		REPOSITORY_ROOT .. "/" .. path,
+		"https://github.com/PPainez/idk/raw/refs/heads/main/" .. path,
+		"https://cdn.jsdelivr.net/gh/PPainez/idk@main/" .. path,
+	}
+	local requestFunction = type(request) == "function" and request
+		or type(http_request) == "function" and http_request
+		or type(httprequest) == "function" and httprequest
+		or type(syn) == "table" and type(syn.request) == "function" and syn.request
+		or type(http) == "table" and type(http.request) == "function" and http.request
+		or nil
+	local errors = {}
+
+	for _, url in ipairs(urls) do
+		if requestFunction then
+			local ok, response = pcall(requestFunction, {
+				Url = url,
+				Method = "GET",
+				Headers = {
+					["Cache-Control"] = "no-cache, no-store, max-age=0",
+					["Pragma"] = "no-cache",
+					["User-Agent"] = "xanhub-bootstrap",
+				},
+			})
+			if ok then
+				local body = type(response) == "table"
+					and (response.Body or response.body or response.ResponseBody)
+					or response
+				local status = type(response) == "table"
+					and tonumber(response.StatusCode or response.Status or response.status_code)
+					or nil
+				if bootstrapBodyValid(body) and (not status or (status >= 200 and status < 300)) then
+					return body
+				end
+				table.insert(errors, tostring(status or "request") .. ": " .. bootstrapSummary(body))
+			else
+				table.insert(errors, bootstrapSummary(response))
+			end
+		end
+
+		local ok, body = pcall(function()
+			return game:HttpGet(url, false)
+		end)
+		if ok and bootstrapBodyValid(body) then
+			return body
+		end
+		table.insert(errors, bootstrapSummary(body))
+	end
+
+	return nil, table.concat(errors, " | ")
+end
+
 local function bootstrapShared(path)
-	local source = game:HttpGet(REPOSITORY_ROOT .. "/" .. path, true)
+	local source, fetchError = bootstrapRequest(path)
+	assert(source, "Shared module request failed (" .. path .. "): " .. tostring(fetchError))
 	local chunk, compileError = loadstring(source)
 	assert(chunk, "Shared module compile failed (" .. path .. "): " .. tostring(compileError))
 	return chunk()
@@ -31,16 +117,28 @@ local Http = bootstrapShared("shared/http.luau")
 local Constants = bootstrapShared("shared/constants.luau")
 Http.setUserAgent(Constants.LOADER_USER_AGENT)
 
-local function repositoryUrls(path)
-	return Constants.repositoryUrls(path)
+local function repositoryUrls(path, cacheBust)
+	return Constants.repositoryUrls(path, cacheBust)
 end
 
 local function fetchSource(urlOrUrls, attempts)
 	return Http.fetchSource(urlOrUrls, attempts)
 end
 
-local function compileSource(source)
-	return Http.compileSource(source)
+local function compileSource(source, chunkName)
+	return Http.compileSource(source, chunkName)
+end
+
+local function loadBuildManifest(fresh)
+	local urls = Constants.buildManifestUrls(fresh == true)
+	local manifest, loadError = Http.fetchLuaTable(urls, { "xanhub-build" }, "@xanhub/build.luau")
+	if type(manifest) ~= "table" then
+		return nil, loadError
+	end
+	if type(manifest.revision) ~= "string" or manifest.revision == "" then
+		return nil, "build manifest has no revision"
+	end
+	return manifest
 end
 
 -- Place-specific scripts. This is the usual table to edit.
@@ -61,7 +159,7 @@ local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 local env = (type(getgenv) == "function" and getgenv()) or _G
 
-print("[xanhub loader] Volt-compatible HTTP")
+print("[xanhub loader] v" .. tostring(Constants.LOADER_VERSION) .. " | Volt-compatible HTTP")
 
 local function safeDestroy(object)
     if object then
@@ -429,12 +527,19 @@ local ok, fatalError = xpcall(function()
         end
     end
 
+    loader.setProgress(0.23, "Resolving current build...")
+    local buildManifest, buildError = loadBuildManifest(true)
+    local buildRevision = buildManifest and buildManifest.revision or Constants.MODULE_CACHE_BUST
+    if not buildManifest then
+        warn("[xanhub loader] Build metadata unavailable: " .. tostring(buildError))
+    end
+
     loader.setProgress(0.30, "Loading xanhub UI...")
-    local uiSource, uiError = fetchSource(repositoryUrls("ui.luau"))
+    local uiSource, uiError = fetchSource(repositoryUrls("ui.luau", buildRevision))
     assert(uiSource, "UI request failed: " .. tostring(uiError))
 
     loader.setProgress(0.43, "Compiling interface...")
-    local uiChunk, uiCompileError = compileSource(uiSource)
+    local uiChunk, uiCompileError = compileSource(uiSource, "@xanhub/ui.luau")
     assert(uiChunk, "UI compile failed: " .. tostring(uiCompileError))
 
     local library = uiChunk()
@@ -442,10 +547,19 @@ local ok, fatalError = xpcall(function()
 
     local runtime = {
         version = type(library.version) == "string" and library.version or "3.2.1",
+        loaderVersion = Constants.LOADER_VERSION,
+        buildVersion = buildManifest and buildManifest.version or "unknown",
+        buildRevision = buildRevision,
+        cacheBust = buildRevision,
+        buildGeneratedAt = buildManifest and buildManifest.generatedAtUTC or nil,
         repositoryRoot = REPOSITORY_ROOT,
         mainRoot = MAIN_ROOT,
-        uiUrl = UI_URL,
-        universalUrl = UNIVERSAL_URL,
+        uiUrl = repositoryUrls("ui.luau", buildRevision)[1],
+        universalUrl = repositoryUrls("universal.luau", buildRevision)[1],
+        shared = {
+            Http = Http,
+            Constants = Constants,
+        },
         library = library,
         placeId = game.PlaceId,
         universeId = game.GameId,
@@ -462,14 +576,14 @@ local ok, fatalError = xpcall(function()
 
     if featured then
         targetName = tostring(featured.name or featured.file or "Featured Game")
-        targetUrl = repositoryUrls("games/" .. tostring(featured.file))
+        targetUrl = repositoryUrls("games/" .. tostring(featured.file), buildRevision)
         runtime.featured = true
         runtime.gameName = targetName
         runtime.gameFile = featured.file
         loader.setProgress(0.67, "Featured game found: " .. targetName)
     else
         targetName = "Universal"
-        targetUrl = repositoryUrls("universal.luau")
+        targetUrl = repositoryUrls("universal.luau", buildRevision)
         runtime.featured = false
         runtime.gameName = "Universal"
         loader.setProgress(0.67, "No featured script; using Universal")
@@ -483,15 +597,16 @@ local ok, fatalError = xpcall(function()
         runtime.featured = false
         runtime.gameName = "Universal"
         targetName = "Universal"
-        targetUrl = repositoryUrls("universal.luau")
+        targetUrl = repositoryUrls("universal.luau", buildRevision)
         loader.setProgress(0.80, "Featured script unavailable; loading Universal")
         targetSource, targetError = fetchSource(targetUrl)
     end
 
     assert(targetSource, targetName .. " request failed: " .. tostring(targetError))
+    runtime.entrySource = targetSource
 
     loader.setProgress(0.88, "Compiling " .. targetName .. "...")
-    local targetChunk, targetCompileError = compileSource(targetSource)
+    local targetChunk, targetCompileError = compileSource(targetSource, "@xanhub/" .. targetName)
     assert(targetChunk, targetName .. " compile failed: " .. tostring(targetCompileError))
 
     loader.setProgress(0.95, "Starting " .. targetName .. " menu...")
@@ -502,9 +617,10 @@ local ok, fatalError = xpcall(function()
     task.spawn(function()
         local executed, err = xpcall(function()
             return targetChunk(runtime)
-        end, debug.traceback)
+        end, safeTraceback)
         if not executed then
             executionError = err
+            warn("[xanhub loader] " .. targetName .. " runtime failed: " .. tostring(err))
         end
         finished = true
     end)
@@ -525,7 +641,7 @@ local ok, fatalError = xpcall(function()
 
     loader.setProgress(1, targetName .. " loaded")
     loader.close(true)
-end, debug.traceback)
+end, safeTraceback)
 
 if not ok then
     fail(fatalError)

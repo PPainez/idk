@@ -232,6 +232,10 @@ return function(ctx)
 		st.zoomMin = LocalPlayer.CameraMinZoomDistance
 		st.zoomMax = LocalPlayer.CameraMaxZoomDistance
 		st.fov = Workspace.CurrentCamera and Workspace.CurrentCamera.FieldOfView or 70
+		st.quality = Enum.QualityLevel.Automatic
+		pcall(function()
+			st.quality = settings().Rendering.QualityLevel
+		end)
 		st.core = {}
 		st.effect = setmetatable({}, { __mode = "k" })
 		st.particle = setmetatable({}, { __mode = "k" })
@@ -320,10 +324,7 @@ return function(ctx)
 			if cam and flag("Gakuran Custom FOV", false) then
 				cam.FieldOfView = numFlag("Gakuran FOV", 80)
 			elseif cam and st.fov then
-				-- only restore if we own the toggle
-				if not flag("Gakuran Custom FOV", false) and math.abs(cam.FieldOfView - st.fov) < 0.01 then
-					-- leave
-				end
+				cam.FieldOfView = st.fov
 			end
 			if flag("Gakuran Unlock Zoom", false) then
 				pcall(function()
@@ -359,7 +360,7 @@ return function(ctx)
 				antiConn = nil
 			end
 			if flag("Gakuran Anti AFK", false) then
-				antiConn = LocalPlayer.Idled:Connect(function()
+				antiConn = ctx.addConnection(LocalPlayer.Idled, function()
 					pcall(function()
 						VirtualUser:CaptureController()
 						VirtualUser:ClickButton2(Vector2.new())
@@ -393,7 +394,7 @@ return function(ctx)
 				pcall(setParticle, d, disable)
 			end
 			pcall(function()
-				settings().Rendering.QualityLevel = disable and Enum.QualityLevel.Level01 or Enum.QualityLevel.Automatic
+				settings().Rendering.QualityLevel = disable and Enum.QualityLevel.Level01 or st.quality
 			end)
 		end)
 		wire("Gakuran Custom FOV", applyCamera)
@@ -406,6 +407,13 @@ return function(ctx)
 		ctx.addConnection(Workspace.DescendantAdded, function(obj)
 			if flag("Gakuran Performance Mode", false) then
 				pcall(setParticle, obj, true)
+			end
+		end)
+
+		ctx.addConnection(Lighting.ChildAdded, function(effect)
+			rememberEffect(effect)
+			if flag("Gakuran Remove Fog", false) or flag("Gakuran No Post FX", false) then
+				task.defer(applyLighting)
 			end
 		end)
 
@@ -480,6 +488,33 @@ return function(ctx)
 				pcall(function()
 					LocalPlayer.CameraMaxZoomDistance = st.zoomMax
 					LocalPlayer.CameraMinZoomDistance = st.zoomMin
+					local cam = Workspace.CurrentCamera
+					if cam then
+						cam.FieldOfView = st.fov
+					end
+				end)
+				for effect, saved in pairs(st.effect or {}) do
+					if effect and effect.Parent then
+						pcall(function()
+							if effect:IsA("PostEffect") then
+								effect.Enabled = saved
+							elseif effect:IsA("Atmosphere") and type(saved) == "table" then
+								effect.Density = saved.Density
+								effect.Haze = saved.Haze
+								effect.Glare = saved.Glare
+							end
+						end)
+					end
+				end
+				for particle, enabled in pairs(st.particle or {}) do
+					if particle and particle.Parent then
+						pcall(function()
+							particle.Enabled = enabled
+						end)
+					end
+				end
+				pcall(function()
+					settings().Rendering.QualityLevel = st.quality
 				end)
 				for t, enabled in pairs(st.core or {}) do
 					pcall(function()

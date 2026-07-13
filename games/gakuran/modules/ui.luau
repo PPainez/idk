@@ -40,6 +40,8 @@ return function(ctx)
 	intro:AddLabel("Edition: Featured · live systems")
 	intro:AddLabel("Place ID: " .. tostring(game.PlaceId))
 	intro:AddLabel("Expected: " .. tostring(ctx.gakuran.placeId))
+	local buildRevision = ctx.runtime and ctx.runtime.buildRevision
+	intro:AddLabel("Build: " .. tostring(ctx.runtime and ctx.runtime.buildVersion or "unknown") .. " · " .. (buildRevision and string.sub(buildRevision, 1, 10) or "local"))
 	intro:AddDivider("Modules")
 	intro:AddLabel("Combat — auto parry · rear dodge · attack DB")
 	intro:AddLabel("Visuals — name/style/grade/stamina ESP")
@@ -104,6 +106,19 @@ return function(ctx)
 	local runtimeSection = columns.homeRight:AddSection("Runtime")
 	ctx.refs.runtimeStatus = runtimeSection:AddLabel("Status: initializing")
 	ctx.refs.featureStatus = runtimeSection:AddLabel("Loaded: —")
+	runtimeSection:AddButton({
+		text = "Copy Build Info",
+		callback = function()
+			local runtime = ctx.runtime or {}
+			ctx.safeClipboard(string.format(
+				"xanhub-gakuran build=%s revision=%s loader=%s place=%s",
+				tostring(runtime.buildVersion or "unknown"),
+				tostring(runtime.buildRevision or "local"),
+				tostring(runtime.loaderVersion or "standalone"),
+				tostring(game.PlaceId)
+			))
+		end,
+	})
 	runtimeSection:AddButton({
 		text = "Print Active Flags",
 		callback = function()

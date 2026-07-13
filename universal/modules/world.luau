@@ -1,7 +1,7 @@
 --[[
     xanhub | universal | world module
 
-    Lighting, performance, and world runtime tweaks.
+    Lighting, performance, and world runtime tweaks with full restoration.
 ]]
 
 return function(ctx)
@@ -19,8 +19,9 @@ return function(ctx)
 		text = "Apply FPS Cap",
 		callback = function()
 			if type(setfpscap) == "function" then
-				pcall(setfpscap, tonumber(ctx.library.flags["Universal FPS Cap"]) or 144)
-				ctx.notify("FPS cap applied")
+				local cap = math.clamp(tonumber(ctx.library.flags["Universal FPS Cap"]) or 144, 30, 360)
+				local ok, err = pcall(setfpscap, cap)
+				ctx.notify(ok and ("FPS cap set to " .. tostring(cap)) or ("FPS cap failed: " .. tostring(err)), ok and 2 or 4)
 			else
 				ctx.notify("setfpscap is unavailable", 3)
 			end
@@ -39,27 +40,39 @@ return function(ctx)
 			FogEnd = ctx.Lighting.FogEnd,
 		}
 
+		local originalQuality = Enum.QualityLevel.Automatic
+		pcall(function()
+			originalQuality = settings().Rendering.QualityLevel
+		end)
+
 		local particleOriginal = setmetatable({}, {__mode = "k"})
 		local descendantConnection
+		local lightingChildConnection
 		local heartbeatConnection
 		local accumulator = 0
 
 		local function rememberEffect(effect)
-			if ctx.state.effectOriginal[effect] ~= nil then
+			if not effect or ctx.state.effectOriginal[effect] ~= nil then
 				return
 			end
-			if effect:IsA("PostEffect") then
-				ctx.state.effectOriginal[effect] = effect.Enabled
-			elseif effect:IsA("Atmosphere") then
-				ctx.state.effectOriginal[effect] = {
-					Density = effect.Density,
-					Haze = effect.Haze,
-					Glare = effect.Glare,
-				}
-			end
+
+			pcall(function()
+				if effect:IsA("PostEffect") then
+					ctx.state.effectOriginal[effect] = effect.Enabled
+				elseif effect:IsA("Atmosphere") then
+					ctx.state.effectOriginal[effect] = {
+						Density = effect.Density,
+						Haze = effect.Haze,
+						Glare = effect.Glare,
+					}
+				end
+			end)
 		end
 
 		local function isParticle(object)
+			if not object then
+				return false
+			end
 			return object:IsA("ParticleEmitter")
 				or object:IsA("Trail")
 				or object:IsA("Beam")
@@ -72,32 +85,20 @@ return function(ctx)
 			if not isParticle(object) then
 				return
 			end
-			if particleOriginal[object] == nil then
-				particleOriginal[object] = object.Enabled
-			end
-			object.Enabled = not disabled and particleOriginal[object] or false
+
+			pcall(function()
+				if particleOriginal[object] == nil then
+					particleOriginal[object] = object.Enabled
+				end
+				object.Enabled = disabled and false or particleOriginal[object]
+			end)
 		end
 
-		local function applyLighting()
-			local original = ctx.state.original.lighting
-			local fullbright = ctx.library.flags["Universal Fullbright"] == true
-			local removeFog = ctx.library.flags["Universal Remove Fog"] == true
-			local disableEffects = ctx.library.flags["Universal Disable Effects"] == true
-			local disableShadows = ctx.library.flags["Universal Disable Shadows"] == true
-				or ctx.library.flags["Universal Performance Mode"] == true
+		local function applyEffect(effect, removeFog, disableEffects)
+			rememberEffect(effect)
+			local saved = ctx.state.effectOriginal[effect]
 
-			ctx.Lighting.Brightness = fullbright and 3 or original.Brightness
-			ctx.Lighting.ClockTime = fullbright and 14 or original.ClockTime
-			ctx.Lighting.Ambient = fullbright and Color3.fromRGB(255, 255, 255) or original.Ambient
-			ctx.Lighting.OutdoorAmbient = fullbright and Color3.fromRGB(255, 255, 255) or original.OutdoorAmbient
-			ctx.Lighting.ExposureCompensation = fullbright and 0 or original.ExposureCompensation
-			ctx.Lighting.GlobalShadows = disableShadows and false or original.GlobalShadows
-			ctx.Lighting.FogStart = removeFog and 0 or original.FogStart
-			ctx.Lighting.FogEnd = removeFog and 1000000 or original.FogEnd
-
-			for _, effect in ipairs(ctx.Lighting:GetChildren()) do
-				rememberEffect(effect)
-				local saved = ctx.state.effectOriginal[effect]
+			pcall(function()
 				if effect:IsA("PostEffect") then
 					effect.Enabled = disableEffects and false or saved
 				elseif effect:IsA("Atmosphere") and type(saved) == "table" then
@@ -105,46 +106,100 @@ return function(ctx)
 					effect.Haze = removeFog and 0 or saved.Haze
 					effect.Glare = removeFog and 0 or saved.Glare
 				end
-			end
-
-			pcall(function()
-				settings().Rendering.QualityLevel = ctx.library.flags["Universal Performance Mode"]
-					and Enum.QualityLevel.Level01
-					or Enum.QualityLevel.Automatic
 			end)
 		end
 
+		local function applyLighting()
+			local original = ctx.state.original.lighting
+			local fullbright = ctx.library.flags["Universal Fullbright"] == true
+			local removeFog = ctx.library.flags["Universal Remove Fog"] == true
+			local disableEffects = ctx.library.flags["Universal Disable Effects"] == true
+			local performanceMode = ctx.library.flags["Universal Performance Mode"] == true
+			local disableShadows = ctx.library.flags["Universal Disable Shadows"] == true or performanceMode
+
+			pcall(function()
+				ctx.Lighting.Brightness = fullbright and 3 or original.Brightness
+				ctx.Lighting.ClockTime = fullbright and 14 or original.ClockTime
+				ctx.Lighting.Ambient = fullbright and Color3.fromRGB(255, 255, 255) or original.Ambient
+				ctx.Lighting.OutdoorAmbient = fullbright and Color3.fromRGB(255, 255, 255) or original.OutdoorAmbient
+				ctx.Lighting.ExposureCompensation = fullbright and 0 or original.ExposureCompensation
+				ctx.Lighting.GlobalShadows = disableShadows and false or original.GlobalShadows
+				ctx.Lighting.FogStart = removeFog and 0 or original.FogStart
+				ctx.Lighting.FogEnd = removeFog and 1000000 or original.FogEnd
+			end)
+
+			for _, effect in ipairs(ctx.Lighting:GetChildren()) do
+				applyEffect(effect, removeFog, disableEffects)
+			end
+
+			pcall(function()
+				settings().Rendering.QualityLevel = performanceMode and Enum.QualityLevel.Level01 or originalQuality
+			end)
+		end
+
+		for _, effect in ipairs(ctx.Lighting:GetChildren()) do
+			rememberEffect(effect)
+		end
+
+		for _, object in ipairs(ctx.Workspace:GetDescendants()) do
+			if isParticle(object) then
+				pcall(function()
+					particleOriginal[object] = object.Enabled
+				end)
+			end
+		end
+
 		descendantConnection = ctx.addConnection(ctx.Workspace.DescendantAdded, function(object)
-			if ctx.library.flags["Universal Disable Particles"] or ctx.library.flags["Universal Performance Mode"] then
-				pcall(setParticle, object, true)
+			if isParticle(object) then
+				setParticle(
+					object,
+					ctx.library.flags["Universal Disable Particles"] == true
+						or ctx.library.flags["Universal Performance Mode"] == true
+				)
 			end
 		end)
 
+		lightingChildConnection = ctx.addConnection(ctx.Lighting.ChildAdded, function(effect)
+			rememberEffect(effect)
+			task.defer(function()
+				if not effect or not effect.Parent or ctx.state.unloading then
+					return
+				end
+				applyEffect(
+					effect,
+					ctx.library.flags["Universal Remove Fog"] == true,
+					ctx.library.flags["Universal Disable Effects"] == true
+				)
+			end)
+		end)
+
 		heartbeatConnection = ctx.addConnection(ctx.RunService.Heartbeat, function(deltaTime)
-			accumulator += deltaTime
-			if accumulator < 0.35 then
+			accumulator += tonumber(deltaTime) or 0
+			if accumulator < 0.35 or ctx.state.unloading then
 				return
 			end
 			accumulator = 0
+
 			applyLighting()
 
 			local disableParticles = ctx.library.flags["Universal Disable Particles"] == true
 				or ctx.library.flags["Universal Performance Mode"] == true
-			for object in pairs(particleOriginal) do
+			for object, enabled in pairs(particleOriginal) do
 				if object and object.Parent then
-					object.Enabled = disableParticles and false or particleOriginal[object]
+					pcall(function()
+						object.Enabled = disableParticles and false or enabled
+					end)
+				else
+					particleOriginal[object] = nil
 				end
 			end
 		end)
 
-		for _, object in ipairs(ctx.Workspace:GetDescendants()) do
-			if isParticle(object) then
-				particleOriginal[object] = object.Enabled
-			end
-		end
+		applyLighting()
 
 		ctx.library:AddCleanup(function()
 			ctx.disconnect(descendantConnection)
+			ctx.disconnect(lightingChildConnection)
 			ctx.disconnect(heartbeatConnection)
 
 			local original = ctx.state.original.lighting
@@ -177,10 +232,10 @@ return function(ctx)
 			end
 
 			pcall(function()
-				settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+				settings().Rendering.QualityLevel = originalQuality
 			end)
 		end)
 	end
 
-	return { setup = setupWorldRuntime }
+	return {setup = setupWorldRuntime}
 end

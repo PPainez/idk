@@ -13,28 +13,69 @@ local env = (type(getgenv) == "function" and getgenv()) or _G
 if type(runtime) ~= "table" then
 	runtime = env.XANHUB_RUNTIME
 end
+runtime = type(runtime) == "table" and runtime or {}
 
 local REPOSITORY_ROOT = (type(runtime) == "table" and runtime.repositoryRoot)
 	or "https://raw.githubusercontent.com/PPainez/idk/main"
 
 local function bootstrapModule(path)
-	local source, loadError
-
-	local ok, result = pcall(function()
-		return game:HttpGet(REPOSITORY_ROOT .. "/" .. path, true)
-	end)
-
-	if ok and type(result) == "string" and #result > 20 then
-		source = result
-	else
-		loadError = tostring(result or "request failed")
+	local shared = runtime.shared
+	if path == "shared/http.luau" and type(shared) == "table" and type(shared.Http) == "table" then
+		return shared.Http
+	end
+	if path == "shared/constants.luau" and type(shared) == "table" and type(shared.Constants) == "table" then
+		return shared.Constants
 	end
 
-	assert(source, "[xanhub gakuran] bootstrap failed for " .. path .. ": " .. tostring(loadError))
+	path = tostring(path):gsub("^/+", "")
+	local urls = {
+		REPOSITORY_ROOT:gsub("/+$", "") .. "/" .. path,
+		"https://github.com/PPainez/idk/raw/refs/heads/main/" .. path,
+		"https://cdn.jsdelivr.net/gh/PPainez/idk@main/" .. path,
+	}
+	local requestFunction = type(request) == "function" and request
+		or type(http_request) == "function" and http_request
+		or type(httprequest) == "function" and httprequest
+		or type(syn) == "table" and type(syn.request) == "function" and syn.request
+		or type(http) == "table" and type(http.request) == "function" and http.request
+		or nil
+	local source
+	local errors = {}
 
+	for _, url in ipairs(urls) do
+		if requestFunction then
+			local ok, response = pcall(requestFunction, {
+				Url = url,
+				Method = "GET",
+				Headers = {
+					["Cache-Control"] = "no-cache, no-store, max-age=0",
+					["Pragma"] = "no-cache",
+					["User-Agent"] = "xanhub-gakuran-bootstrap",
+				},
+			})
+			if ok then
+				local body = type(response) == "table" and (response.Body or response.body or response.ResponseBody) or response
+				local status = type(response) == "table" and tonumber(response.StatusCode or response.Status or response.status_code) or nil
+				if type(body) == "string" and #body > 20 and (not status or (status >= 200 and status < 300)) then
+					source = body
+					break
+				end
+				table.insert(errors, tostring(status or "request failed"))
+			end
+		end
+		local ok, body = pcall(function()
+			return game:HttpGet(url, false)
+		end)
+		if ok and type(body) == "string" and #body > 20 then
+			source = body
+			break
+		end
+		table.insert(errors, tostring(body or "HttpGet failed"))
+	end
+
+	assert(source, "[xanhub gakuran] bootstrap failed for " .. path .. ": " .. table.concat(errors, " | "))
 	local chunk, compileError = loadstring(source)
 	assert(chunk, "[xanhub gakuran] compile failed for " .. path .. ": " .. tostring(compileError))
-
 	return chunk()
 end
 
@@ -45,9 +86,30 @@ local ModuleLoader = bootstrapModule("shared/module_loader.luau")
 local createContext = bootstrapModule("universal/lib/context.luau")
 
 Http.setUserAgent(Constants.UNIVERSAL_USER_AGENT)
+runtime.shared = {
+	Http = Http,
+	Constants = Constants,
+}
+
+if type(runtime.buildRevision) ~= "string" or runtime.buildRevision == "" then
+	local manifest, manifestError = Http.fetchLuaTable(
+		Constants.buildManifestUrls(true),
+		{ "xanhub-build" },
+		"@xanhub/build.luau"
+	)
+	if type(manifest) == "table" and type(manifest.revision) == "string" then
+		runtime.buildRevision = manifest.revision
+		runtime.cacheBust = manifest.revision
+		runtime.buildVersion = manifest.version
+		runtime.buildGeneratedAt = manifest.generatedAtUTC
+	else
+		runtime.cacheBust = runtime.cacheBust or Constants.MODULE_CACHE_BUST
+		warn("[xanhub gakuran] Build metadata unavailable: " .. tostring(manifestError))
+	end
+end
 
 local moduleLoader = ModuleLoader.new(Http, function(path)
-	return Constants.repositoryUrls(path)
+	return Constants.repositoryUrls(path, runtime.cacheBust or runtime.buildRevision)
 end)
 
 -- Always clear in-process module cache so re-exec after push loads new combat/etc.
@@ -58,7 +120,7 @@ if type(runtime) == "table" then
 	runtime.forceFreshModules = true
 end
 
-local UI_URL = (type(runtime) == "table" and runtime.uiUrl) or Constants.uiUrl()
+local UI_URL = runtime.uiUrl or Constants.uiUrl(runtime.cacheBust)
 
 local function acquireLibrary()
 	if type(runtime) == "table" and runtime.reloadedFromUpdate == true then
@@ -71,10 +133,10 @@ local function acquireLibrary()
 		return runtime.library
 	end
 
-	local source, fetchError = Http.fetchSource(UI_URL)
+	local source, fetchError = Http.fetchSource(Constants.repositoryUrls("ui.luau", runtime.cacheBust))
 	assert(source, "[xanhub gakuran] UI request failed: " .. tostring(fetchError))
 
-	local chunk, compileError = Http.compileSource(source)
+	local chunk, compileError = Http.compileSource(source, "@xanhub/ui.luau")
 	assert(chunk, "[xanhub gakuran] UI compile failed: " .. tostring(compileError))
 
 	local loaded = chunk()
@@ -94,7 +156,7 @@ end
 local library = acquireLibrary()
 library:SetTitle("xanhub | Gakuran")
 library:SetAccent(Color3.fromRGB(255, 168, 64))
-library:SetTweening(false)
+library:SetTweening(true)
 
 local services = {
 	Players = game:GetService("Players"),
@@ -125,6 +187,13 @@ local state = {
 	vc = {}, -- for vc bypass state
 }
 
+runtime.startedAt = tonumber(runtime.startedAt) or os.clock()
+runtime.moduleStatus = {}
+runtime.repositoryRoot = REPOSITORY_ROOT
+runtime.placeId = game.PlaceId
+runtime.universeId = game.GameId
+env.XANHUB_RUNTIME = runtime
+
 local connections = Connection.new(library, state.connections)
 
 local ctx = createContext({
@@ -143,6 +212,7 @@ ctx.shared = {
 	Http = Http,
 	Constants = Constants,
 }
+ctx.fetchSource = Http.fetchSource
 ctx.moduleLoader = moduleLoader
 ctx.gakuran = {
 	placeId = GAKURAN_PLACE_ID,
@@ -150,11 +220,20 @@ ctx.gakuran = {
 }
 
 local function safeLoadFeature(path)
-	local ok, result = pcall(function()
-		return moduleLoader.load(path)(ctx)
-	end)
+	local factory, loadError = moduleLoader.tryLoad(path)
+	if type(factory) ~= "function" then
+		ctx.setModuleStatus(path, "load-error", loadError)
+		warn("[xanhub gakuran] failed to load " .. path .. ": " .. tostring(loadError))
+		return nil
+	end
+	local startedAt = os.clock()
+	local ok, result = xpcall(function()
+		return factory(ctx)
+	end, ctx.traceback)
+	local record = ctx.setModuleStatus(path, ok and "loaded" or "factory-error", ok and nil or result)
+	record.duration = os.clock() - startedAt
 	if not ok then
-		warn("[xanhub gakuran] failed to load " .. path .. ": " .. tostring(result))
+		warn("[xanhub gakuran] failed to initialize " .. path .. ": " .. tostring(result))
 		return nil
 	end
 	return result
@@ -162,12 +241,16 @@ end
 
 local function safeSetup(name, controller)
 	if not controller or type(controller.setup) ~= "function" then
-		return
+		return true
 	end
-	local ok, err = pcall(controller.setup)
+	local startedAt = os.clock()
+	local ok, err = xpcall(controller.setup, ctx.traceback)
+	local record = ctx.setModuleStatus(name, ok and "ready" or "setup-error", ok and nil or err)
+	record.setupDuration = os.clock() - startedAt
 	if not ok then
 		warn("[xanhub gakuran] " .. tostring(name) .. " setup failed: " .. tostring(err))
 	end
+	return ok
 end
 
 local uiResult = safeLoadFeature("games/gakuran/modules/ui.luau")
@@ -259,9 +342,13 @@ task.defer(function()
 		if state.unloading then
 			return
 		end
-		local ok, err = pcall(setup)
+		local featureName = tostring(featureNames[index])
+		local startedAt = os.clock()
+		local ok, err = xpcall(setup, ctx.traceback)
+		local record = ctx.setModuleStatus("games/gakuran/modules/" .. featureName .. ".luau", ok and "ready" or "setup-error", ok and nil or err)
+		record.setupDuration = os.clock() - startedAt
 		if not ok then
-			warn("[xanhub gakuran] feature setup failed (" .. tostring(featureNames[index]) .. "): " .. tostring(err))
+			warn("[xanhub gakuran] feature setup failed (" .. featureName .. "): " .. tostring(err))
 		end
 	end
 
@@ -292,9 +379,10 @@ task.defer(function()
 	print("[xanhub] Gakuran features live for place", game.PlaceId, table.concat(featureNames, ", "))
 end)
 
-print("[xanhub] Gakuran menu ready for place", game.PlaceId)
+print("[xanhub] Gakuran menu ready for place", game.PlaceId, "build", runtime.buildRevision or "local")
 return {
 	library = library,
 	runtime = runtime,
 	state = state,
+	context = ctx,
 }

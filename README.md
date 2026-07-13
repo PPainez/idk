@@ -1,3 +1,55 @@
+# xanhub Repository
+
+This repository contains the xanhub UI library, the universal hub, game-specific modules, shared runtime infrastructure, and optional developer tools. The current build uses a generated `build.luau` manifest so the loader and in-menu updater can identify the exact revision that is running instead of relying on cached raw GitHub responses.
+
+## Recommended entry point
+
+Run `loader.luau`. It resolves the build manifest, loads the matching UI and feature sources with revision-based cache busting, selects a featured game module when available, and falls back to Universal.
+
+```lua
+loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/PPainez/idk/main/loader.luau",
+    false
+))()
+```
+
+## Repository layout
+
+```text
+loader.luau                 build-aware runtime entry point
+build.luau                  generated version/revision/file hashes
+shared/                     HTTP, connection, constants, module loader
+universal.luau              modular universal host
+universal/modules/          Universal feature modules
+games/                      featured game hosts and modules
+devmodules/                 diagnostics, notifications, loggers, viewers
+tools/update-build.ps1      regenerates build.luau
+tools/verify-build.ps1      validates every manifest hash before push
+ui.luau                     standalone xanhub UI library
+```
+
+## Build and update flow
+
+1. Edit repository files.
+2. Run `push.bat`, or run `tools/update-build.ps1` manually.
+3. `build.luau` receives a SHA-256 revision calculated from every Luau source file.
+4. `tools/verify-build.ps1` confirms that every listed file exists and still matches its hash.
+5. The loader places the revision in `XANHUB_RUNTIME`, and all module URLs use it as their cache key.
+6. Universal checks `build.luau`; it only offers a reload when the remote revision is different from the build actually running.
+
+## Runtime reliability
+
+- Module loading is isolated: one optional module can fail without destroying the whole menu.
+- Load duration, provider, byte count, cache hits, setup state, and errors are recorded for Runtime Diagnostics.
+- Update downloads are marker-validated and compiled before the existing menu unloads.
+- HTTP errors summarize response bodies instead of printing an entire downloaded script.
+- World, UI, camera, particle, effect, CoreGui, and rendering-quality changes are restored during unload.
+- Developer notifications use a stacked queue and are available even when the Developer tab is hidden.
+
+See `CHANGELOG.md` for the current build changes and `BUILD_AUDIT.md` for the latest scan notes.
+
+---
+
 # xanhub UI Library Guide
 
 This guide explains how to load **xanhub**, build menus, use every control type, change values from code, manage configs, show warnings and notifications, and unload everything cleanly.

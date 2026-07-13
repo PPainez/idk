@@ -1,7 +1,8 @@
 --[[
     xanhub | universal | updates
 
-    Remote update checker with full menu replacement reload.
+    Fast build-manifest update checks with a full-source fallback and complete
+    menu replacement reload.
 ]]
 
 local UNIVERSAL_MARKERS = {
@@ -9,7 +10,14 @@ local UNIVERSAL_MARKERS = {
 	"local runtime = ...",
 }
 
-local UPDATE_MANIFEST = {
+-- Used only when build.luau is unavailable. This fallback is intentionally
+-- all-or-nothing so transient missing files cannot create a false revision.
+local FALLBACK_MANIFEST = {
+	"shared/constants.luau",
+	"shared/http.luau",
+	"shared/connection.luau",
+	"shared/module_loader.luau",
+	"ui.luau",
 	"universal.luau",
 	"universal/lib/context.luau",
 	"universal/modules/ui.luau",
@@ -21,7 +29,10 @@ local UPDATE_MANIFEST = {
 	"universal/modules/utility.luau",
 	"universal/modules/keybinds.luau",
 	"universal/modules/devtools.luau",
+	"devmodules/manifest.luau",
 	"devmodules/dev_shared.luau",
+	"devmodules/notification_center.luau",
+	"devmodules/runtime_diagnostics.luau",
 	"devmodules/remote_spy.luau",
 	"devmodules/console_logger.luau",
 	"devmodules/performance_profiler.luau",
@@ -39,17 +50,19 @@ return function(ctx)
 	local Constants = ctx.shared.Constants
 
 	local UPDATE_FOLDER = "xanhub_updates"
-	local UPDATE_REVISION_FILE = UPDATE_FOLDER .. "/universal_manifest_revision.txt"
+	local UPDATE_REVISION_FILE = UPDATE_FOLDER .. "/universal_build_revision.txt"
 
 	local controllerState = {
 		checking = false,
 		prompting = false,
 		reloading = false,
 		disposed = false,
-		sessionRevision = nil,
+		sessionRevision = type(runtime) == "table" and runtime.buildRevision or nil,
 		previousRevision = nil,
 		promptedRevision = nil,
 		declinedRevision = nil,
+		lastCheckedAt = nil,
+		latestManifest = nil,
 	}
 
 	local updateFilesystem = type(isfolder) == "function"
@@ -64,11 +77,17 @@ return function(ctx)
 		text = "",
 	})
 
+	local function safeTraceback(err)
+		if type(ctx.traceback) == "function" then
+			return ctx.traceback(err)
+		end
+		return tostring(err)
+	end
+
 	local function setStatus(message)
 		if controllerState.disposed then
 			return
 		end
-
 		if statusLabel and statusLabel.Text ~= nil then
 			pcall(function()
 				statusLabel.Text = "Updates: " .. tostring(message)
@@ -76,25 +95,49 @@ return function(ctx)
 		end
 	end
 
-	local function fetchManifestSource(path)
-		for _, url in ipairs(Constants.repositoryUrls(path)) do
-			local source, requestError = Http.requestOne(url)
-			if source and Http.validLuaBody(source) then
-				return source, url
-			end
-		end
-		return nil, "failed to fetch " .. path
+	local function revisionLabel(revision)
+		revision = tostring(revision or "unknown")
+		return #revision > 10 and string.sub(revision, 1, 10) or revision
 	end
 
-	local function fetchRemoteBuild()
-		local errors = {}
+	local function fetchBuildManifest()
+		local manifest, loadError = Http.fetchLuaTable(
+			Constants.buildManifestUrls(true),
+			{ "xanhub-build" },
+			"@xanhub/build.luau"
+		)
+		if type(manifest) ~= "table" then
+			return nil, loadError
+		end
+		if type(manifest.revision) ~= "string" or manifest.revision == "" then
+			return nil, "build manifest has no revision"
+		end
+		return manifest
+	end
+
+	local function fetchUniversalSource(revision)
+		local source, fetchError = Http.fetchSource(
+			Constants.repositoryUrls("universal.luau", revision),
+			2
+		)
+		if not source then
+			return nil, fetchError
+		end
+		if not Http.validSource(source, UNIVERSAL_MARKERS) then
+			return nil, "universal.luau failed marker validation"
+		end
+		return source
+	end
+
+	local function fetchFallbackBuild()
 		local fingerprints = {}
 		local mainSource
+		local errors = {}
 
-		for _, path in ipairs(UPDATE_MANIFEST) do
-			local source, providerOrError = fetchManifestSource(path)
+		for _, path in ipairs(FALLBACK_MANIFEST) do
+			local source, fetchError = Http.fetchSource(Constants.freshRepositoryUrls(path), 1)
 			if not source then
-				table.insert(errors, tostring(providerOrError))
+				table.insert(errors, path .. ": " .. tostring(fetchError))
 			else
 				table.insert(fingerprints, path .. ":" .. Http.rollingHash(source))
 				if path == "universal.luau" then
@@ -103,24 +146,41 @@ return function(ctx)
 			end
 		end
 
-		if not mainSource then
-			return nil, nil, table.concat(errors, " | ")
+		if #errors > 0 then
+			return nil, nil, nil, "fallback incomplete: " .. table.concat(errors, " | ")
 		end
-
-		if not Http.validSource(mainSource, UNIVERSAL_MARKERS) then
-			return nil, nil, "universal.luau failed marker validation"
+		if not mainSource or not Http.validSource(mainSource, UNIVERSAL_MARKERS) then
+			return nil, nil, nil, "fallback universal source invalid"
 		end
 
 		table.sort(fingerprints)
 		local revision = Http.rollingHash(table.concat(fingerprints, "|"))
-		return mainSource, revision, "manifest(" .. tostring(#fingerprints) .. " files)"
+		return mainSource, revision, {
+			name = "xanhub-build-fallback",
+			version = "fallback",
+			revision = revision,
+			fileCount = #fingerprints,
+		}, "fallback hash"
+	end
+
+	local function fetchRemoteBuild()
+		local manifest, manifestError = fetchBuildManifest()
+		if manifest then
+			local source, sourceError = fetchUniversalSource(manifest.revision)
+			if not source then
+				return nil, nil, manifest, sourceError
+			end
+			return source, manifest.revision, manifest, "build manifest"
+		end
+
+		warn("[xanhub updater] build.luau unavailable; using fallback: " .. tostring(manifestError))
+		return fetchFallbackBuild()
 	end
 
 	local function readSavedRevision()
 		if not updateFilesystem then
 			return nil
 		end
-
 		local ok, result = pcall(function()
 			if not isfile(UPDATE_REVISION_FILE) then
 				return nil
@@ -134,7 +194,6 @@ return function(ctx)
 		if not updateFilesystem or type(revision) ~= "string" then
 			return false
 		end
-
 		return pcall(function()
 			if not isfolder(UPDATE_FOLDER) then
 				makefolder(UPDATE_FOLDER)
@@ -147,6 +206,7 @@ return function(ctx)
 		local names = {
 			["xanhub_ui"] = true,
 			["uwuware_ui"] = true,
+			["xanhub_dev_overlay"] = true,
 		}
 		local parents = {}
 
@@ -156,7 +216,7 @@ return function(ctx)
 			end
 		end
 
-		local function addGetter(getter)
+		for _, getter in ipairs({ gethui, get_hidden_gui, gethiddengui }) do
 			if type(getter) == "function" then
 				local ok, parent = pcall(getter)
 				if ok then
@@ -165,14 +225,9 @@ return function(ctx)
 			end
 		end
 
-		addGetter(gethui)
-		addGetter(get_hidden_gui)
-		addGetter(gethiddengui)
-
 		pcall(function()
 			addParent(game:GetService("CoreGui"))
 		end)
-
 		pcall(function()
 			local player = ctx.Players.LocalPlayer
 			if player then
@@ -191,25 +246,30 @@ return function(ctx)
 		end
 	end
 
-	local function buildReloadRuntime(revision)
+	local function buildReloadRuntime(revision, manifest, entrySource)
 		local nextRuntime = {}
 		if type(runtime) == "table" then
 			for key, value in pairs(runtime) do
-				if key ~= "library" and key ~= "unloading" then
+				if key ~= "library" and key ~= "unloading" and key ~= "moduleStatus" and key ~= "shared" then
 					nextRuntime[key] = value
 				end
 			end
 		end
 
 		nextRuntime.library = nil
+		nextRuntime.shared = nil
 		nextRuntime.unloading = false
 		nextRuntime.reloadedFromUpdate = true
 		nextRuntime.forceFreshModules = true
-		nextRuntime.updateRevision = revision
+		nextRuntime.buildRevision = revision
+		nextRuntime.cacheBust = revision
+		nextRuntime.buildVersion = manifest and manifest.version or nextRuntime.buildVersion
+		nextRuntime.buildGeneratedAt = manifest and manifest.generatedAtUTC or nextRuntime.buildGeneratedAt
+		nextRuntime.entrySource = entrySource
 		nextRuntime.placeId = game.PlaceId
 		nextRuntime.universeId = game.GameId
 		nextRuntime.repositoryRoot = runtime and runtime.repositoryRoot or Constants.REPOSITORY_ROOT
-		nextRuntime.uiUrl = runtime and runtime.uiUrl or Constants.uiUrl()
+		nextRuntime.uiUrl = Constants.uiUrl(revision)
 		return nextRuntime
 	end
 
@@ -224,47 +284,37 @@ return function(ctx)
 		state.aimTarget = nil
 	end
 
-	local function reloadRemoteBuild(revision)
+	local function reloadRemoteBuild(source, revision, manifest)
 		if controllerState.reloading or state.reloading then
+			return
+		end
+
+		local compiledChunk, compileError = Http.compileSource(source, "@xanhub/universal-update")
+		if not compiledChunk then
+			setStatus("update compile failed")
+			ctx.toast("error", "Update compile failed: " .. tostring(compileError), {
+				title = "Update rejected",
+				channel = "updates",
+				duration = 7,
+			})
 			return
 		end
 
 		controllerState.reloading = true
 		state.reloading = true
-		state.unloading = true
-		setStatus("downloading latest build...")
-		ctx.notify("Downloading latest Universal build...", 2)
+		setStatus("update accepted — unloading features")
+		ctx.toast("info", "The current menu will unload and reopen on build " .. revisionLabel(revision), {
+			title = "Applying update",
+			channel = "updates",
+			duration = 3,
+		})
 
 		task.spawn(function()
-			local source, latestRevision, providerOrError = fetchRemoteBuild()
-			local targetRevision = latestRevision or revision
-
-			if not source then
-				controllerState.reloading = false
-				state.reloading = false
-				state.unloading = false
-				setStatus("reload failed")
-				ctx.notify("Update reload failed: " .. tostring(providerOrError), 5)
-				return
-			end
-
-			local compiledChunk, compileError = Http.compileSource(source)
-			if not compiledChunk then
-				controllerState.reloading = false
-				state.reloading = false
-				state.unloading = false
-				setStatus("reload compile failed")
-				ctx.notify("Update compile failed: " .. tostring(compileError), 5)
-				return
-			end
-
-			setStatus("replacing menu...")
-			ctx.notify("Replacing menu with updated build...", 2)
-
 			disableActiveFeatures()
 			controllerState.disposed = true
+			state.unloading = true
 
-			local nextRuntime = buildReloadRuntime(targetRevision)
+			local nextRuntime = buildReloadRuntime(revision, manifest, source)
 			if type(runtime) == "table" then
 				runtime.unloading = true
 				runtime.library = nil
@@ -281,58 +331,47 @@ return function(ctx)
 			end
 
 			destroyExistingUiRoots()
-			task.wait(0.05)
-
+			task.wait(0.08)
 			env.XANHUB_RUNTIME = nextRuntime
 
 			local started, startResult = xpcall(function()
 				return compiledChunk(nextRuntime)
-			end, debug.traceback)
+			end, safeTraceback)
 
 			if started then
-				writeSavedRevision(targetRevision)
-				setStatus("reload complete")
-				ctx.notify("Universal updated successfully", 3)
+				writeSavedRevision(revision)
 			else
-				state.reloading = false
-				state.unloading = false
-				setStatus("reload failed")
 				warn("[xanhub updater] updated script failed to start:\n" .. tostring(startResult))
-				ctx.notify("Updated build failed to start", 5)
 			end
 		end)
 	end
 
-	local function askToReload(_source, revision, reason, manual)
+	local function askToReload(source, revision, manifest, manual)
 		if controllerState.prompting or controllerState.reloading or controllerState.disposed then
 			return
 		end
-
 		if controllerState.promptedRevision == revision and not manual then
 			return
 		end
 
 		controllerState.prompting = true
 		controllerState.promptedRevision = revision
-		setStatus("update available — waiting for choice")
+		setStatus("build " .. revisionLabel(revision) .. " available — waiting for choice")
 
-		local reasonText = reason == "session"
-			and "A newer Universal build was published after this menu loaded."
-			or "Universal features changed since your previous load."
-
-		confirmWarning.text = reasonText
-			.. "\n\nReload now to replace every tab with the latest build?"
-			.. "\n\nYour current menu will fully unload, then reopen instantly."
+		local versionText = manifest and manifest.version and (" v" .. tostring(manifest.version)) or ""
+		confirmWarning.text = "A newer Universal build" .. versionText .. " is available."
+			.. "\n\nReload features now?"
+			.. "\n\nThe current functions and menu will unload, then the updated build will reopen."
+			.. "\nThis may briefly flicker if the executor is slow."
 
 		local accepted = confirmWarning:Show() == true
 		controllerState.prompting = false
 
 		if accepted then
-			setStatus("update accepted — preparing reload")
-			reloadRemoteBuild(revision)
+			reloadRemoteBuild(source, revision, manifest)
 		else
 			controllerState.declinedRevision = revision
-			setStatus("update available — reload declined")
+			setStatus("build " .. revisionLabel(revision) .. " available — reload declined")
 			ctx.notify("Update reload cancelled", 2)
 		end
 	end
@@ -341,7 +380,6 @@ return function(ctx)
 		if controllerState.disposed or state.unloading or controllerState.reloading then
 			return
 		end
-
 		if controllerState.checking then
 			if manual then
 				ctx.notify("An update check is already running", 2)
@@ -350,11 +388,12 @@ return function(ctx)
 		end
 
 		controllerState.checking = true
-		setStatus("checking...")
+		setStatus("checking current build...")
 
 		task.spawn(function()
-			local source, latestRevision, providerOrError = fetchRemoteBuild()
+			local source, latestRevision, manifest, providerOrError = fetchRemoteBuild()
 			controllerState.checking = false
+			controllerState.lastCheckedAt = os.time()
 
 			if controllerState.disposed or state.unloading or controllerState.reloading then
 				return
@@ -363,39 +402,35 @@ return function(ctx)
 			if not source or not latestRevision then
 				setStatus("check failed")
 				if manual then
-					ctx.notify("Update check failed: " .. tostring(providerOrError), 4)
+					ctx.toast("error", "Update check failed: " .. tostring(providerOrError), {
+						title = "Update check",
+						channel = "updates",
+						duration = 7,
+					})
 				end
 				return
 			end
 
-			if controllerState.previousRevision == nil then
-				controllerState.previousRevision = readSavedRevision()
-			end
+			controllerState.latestManifest = manifest
+			controllerState.previousRevision = controllerState.previousRevision or readSavedRevision()
 
-			local changedSinceSession = controllerState.sessionRevision ~= nil
-				and latestRevision ~= controllerState.sessionRevision
-			local changedSinceLastLoad = controllerState.previousRevision ~= nil
-				and latestRevision ~= controllerState.previousRevision
-
+			-- runtime.buildRevision represents the build actually running. Only a
+			-- difference from that value means a reload is necessary.
 			if controllerState.sessionRevision == nil then
 				controllerState.sessionRevision = latestRevision
 			end
 
-			if changedSinceSession or changedSinceLastLoad then
-				askToReload(source, latestRevision, changedSinceSession and "session" or "last_load", manual)
+			if latestRevision ~= controllerState.sessionRevision then
+				task.defer(function()
+					askToReload(source, latestRevision, manifest, manual)
+				end)
 				return
 			end
 
-			if controllerState.previousRevision == nil then
-				writeSavedRevision(latestRevision)
-				controllerState.previousRevision = latestRevision
-				setStatus("baseline saved")
-			elseif controllerState.declinedRevision == latestRevision then
-				setStatus("update available — reload declined")
-			else
-				setStatus("up to date")
-			end
-
+			writeSavedRevision(latestRevision)
+			controllerState.previousRevision = latestRevision
+			local versionText = manifest and manifest.version and ("v" .. tostring(manifest.version) .. " · ") or ""
+			setStatus(versionText .. "up to date · " .. revisionLabel(latestRevision))
 			if manual then
 				ctx.notify("Universal is up to date", 2)
 			end
@@ -436,6 +471,9 @@ return function(ctx)
 			pcall(function()
 				confirmWarning:Close()
 			end)
+		end,
+		getState = function()
+			return controllerState
 		end,
 	}
 end

@@ -149,6 +149,7 @@ return function(ctx)
 
     local state = {
         destroyed = false,
+        setupDone = false,
         root = nil,
         stack = nil,
         layout = nil,
@@ -1153,6 +1154,10 @@ return function(ctx)
         return result
     end
 
+    function api:IsReady()
+        return state.setupDone and not state.destroyed and state.root ~= nil and state.root.Parent ~= nil
+    end
+
     function api:GetActive()
         local result = {}
         for _, id in ipairs(state.activeOrder) do
@@ -1478,6 +1483,10 @@ return function(ctx)
     end
 
     local function setup()
+        if state.setupDone or state.destroyed then
+            return
+        end
+        state.setupDone = true
         ensureRoot()
         applyPlacement(true)
 

@@ -43,6 +43,52 @@ local function createContext(deps)
 		LocalPlayer = LocalPlayer,
 	}
 
+
+	function ctx.traceback(err)
+		local message = tostring(err)
+		if type(debug) == "table" and type(debug.traceback) == "function" then
+			local ok, result = pcall(debug.traceback, message, 2)
+			if ok and type(result) == "string" then
+				return result
+			end
+		end
+		return message
+	end
+
+	function ctx.safeCall(label, callback, ...)
+		if type(callback) ~= "function" then
+			return false, "callback is not a function"
+		end
+		local arguments = table.pack(...)
+		local ok, result = xpcall(function()
+			return callback(table.unpack(arguments, 1, arguments.n))
+		end, ctx.traceback)
+		if not ok then
+			warn("[xanhub " .. tostring(label or "callback") .. "] " .. tostring(result))
+		end
+		return ok, result
+	end
+
+	function ctx.setModuleStatus(path, status, detail)
+		runtime = type(runtime) == "table" and runtime or {}
+		runtime.moduleStatus = type(runtime.moduleStatus) == "table" and runtime.moduleStatus or {}
+		local record = runtime.moduleStatus[tostring(path)] or {}
+		record.status = tostring(status or "unknown")
+		record.detail = detail and tostring(detail) or nil
+		record.updatedAt = os.clock()
+		runtime.moduleStatus[tostring(path)] = record
+		return record
+	end
+
+	function ctx.getModuleStatus()
+		return type(runtime) == "table" and runtime.moduleStatus or {}
+	end
+
+	function ctx.getUptime()
+		local startedAt = type(runtime) == "table" and tonumber(runtime.startedAt) or nil
+		return startedAt and math.max(0, os.clock() - startedAt) or 0
+	end
+
 	function ctx.notify(message, duration)
 		-- Prefer stacked notification center when devtools loaded it.
 		local notifications = ctx.devtools
