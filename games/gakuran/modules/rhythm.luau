@@ -1,23 +1,16 @@
 --[[
     xanhub | gakuran | rhythm
 
-    Engine truth (RhythmEngine, live decompile):
-      Tap:  press near note.t → score from head timing immediately
-      Hold: press near note.t → note.hit=true, holding starts at max(press, note.t)
-            keep lane DOWN until note.t+len
-            engine auto-scores at hold end while still holding (_judgeHoldNote)
-            release AFTER hold end (or after holdJudgment is set)
-      Hold grade needs ratio held/len >= 0.95 for PERFECT (with good head timing)
-      Early release → EARLY_RELEASE path with ratio often < 0.95 → BAD/OKAY
+    RhythmEngine (live):
+      Tap  → press near note.t, judged by |press - note.t|
+      Hold → press head, keep lane down until note.t+len, engine scores at end
+             hold PERFECT needs ratio >= 0.95 and non-MISS head
+      _reconcileStaleKeyboardReleases drops synthetic presses unless
+      _laneTouchActive[lane] is true — we latch that while we own the key
 
-    Critical: _step calls _reconcileStaleKeyboardReleases every frame. That releases any
-    _laneKeyDown lane unless _laneTouchActive[lane] OR real UIS key/gamepad is down.
-    Synthetic _handleLanePress alone is cleared same-frame → EARLY_RELEASE on holds.
-    Fix: latch _laneTouchActive[lane]=true while we own the key (engine touch path).
-
-    Grade mix: aim for rolled grade but NEVER schedule past ~BAD-margin (frame lag
-    turned late OKAY/BAD into MISS). Safe Holds force near-perfect heads + full tail.
-    Same-lane schedule may shrink taps; it must not push the next note outside the window.
+    Grade weights control the *intended* judgment. hitAt is always kept inside
+    the rolled grade band. Lane conflicts shorten previous taps — they never
+    shove the next note into a worse band (that caused OKAY streaks at weight 1).
 
     NO getgc. Session via getloadedmodules → RhythmServiceClient._session only.
 ]]
@@ -40,18 +33,18 @@ return function(ctx)
 		text = "Strict Grade Caps",
 		flag = "Gakuran Rhythm Strict Grades",
 		state = true,
-		tip = "Keep head timing inside rolled grade band",
+		tip = "Press timing always stays inside the rolled grade band",
 	})
 	core:AddToggle({
 		text = "Safe Holds (recommended)",
 		flag = "Gakuran Rhythm Safe Holds",
 		state = true,
-		tip = "Holds use tight head timing + release only after chart end (fixes drops)",
+		tip = "Holds use tight PERFECT/GOOD heads + full tail (no early release)",
 	})
-	core:AddLabel("Holds need ~95% of tail held — we never early-release")
+	core:AddLabel("Weights = intended judgments · holds never early-release")
 
 	local grades = columns.rhythmLeft:AddSection("Grade Mix")
-	grades:AddLabel("Weights auto-normalize")
+	grades:AddLabel("Weights auto-normalize · rare grades anti-streak")
 	grades:AddSlider({ text = "Perfect", flag = "Gakuran Rhythm W Perfect", min = 0, max = 100, value = 40, float = 1 })
 	grades:AddSlider({ text = "Good", flag = "Gakuran Rhythm W Good", min = 0, max = 100, value = 35, float = 1 })
 	grades:AddSlider({ text = "Okay", flag = "Gakuran Rhythm W Okay", min = 0, max = 100, value = 16, float = 1 })
@@ -63,7 +56,7 @@ return function(ctx)
 		max = 100,
 		value = 3,
 		float = 1,
-		tip = "Taps only — holds never miss when Safe Holds is on",
+		tip = "Taps only — holds never intentional-miss when Safe Holds is on",
 	})
 
 	local feel = columns.rhythmLeft:AddSection("Human Feel")
@@ -120,7 +113,7 @@ return function(ctx)
 		value = 40,
 		float = 1,
 		suffix = " ms",
-		tip = "How long taps stay held (short = next same-lane note can press sooner)",
+		tip = "How long taps stay held (shorter = denser same-lane streams OK)",
 	})
 	feel:AddSlider({
 		text = "Hold Extra After End",
@@ -130,7 +123,7 @@ return function(ctx)
 		value = 25,
 		float = 1,
 		suffix = " ms",
-		tip = "Keep key down this long AFTER hold end (engine auto-scores at end)",
+		tip = "Keep key down after hold end (engine auto-scores at end)",
 	})
 
 	local presets = columns.rhythmRight:AddSection("Presets")
@@ -220,15 +213,18 @@ return function(ctx)
 	end
 	local st = ctx.state.rhythm
 	st.planned = {}
-	st.laneDown = {} -- lane -> plan currently holding key
+	st.laneDown = {}
 	st.service = nil
 	st.sessionToken = nil
 	st.hits = 0
 	st.skips = 0
 	st.gradeRolls = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
+	st.gradeActual = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
+	st.recentGrades = {}
 	st.lastNow = nil
 
 	local DEFAULT_WINDOWS = { PERFECT = 43, GOOD = 76, OKAY = 106, BAD = 140 }
+	local GRADE_ORDER = { "PERFECT", "GOOD", "OKAY", "BAD", "MISS" }
 
 	-- Helpers ------------------------------------------------------------
 
@@ -277,7 +273,6 @@ return function(ctx)
 		return nil
 	end
 
-	-- Disable reconcile that kills synthetic presses; touch latch is primary fix.
 	local function hardenSession(session)
 		if type(session) ~= "table" or session.__xhRhythmHoldFix then
 			return
@@ -346,98 +341,172 @@ return function(ctx)
 		return a + math.random() * (b - a)
 	end
 
-	-- Leave room for Heartbeat lag / schedule so late OKAY/BAD never become MISS.
-	local TIMING_MARGIN_MS = 18
-
-	local function pickGrade(isHold)
-		local weights = {
-			{ "PERFECT", math.max(0, numFlag("Gakuran Rhythm W Perfect", 40)) },
-			{ "GOOD", math.max(0, numFlag("Gakuran Rhythm W Good", 35)) },
-			{ "OKAY", math.max(0, numFlag("Gakuran Rhythm W Okay", 16)) },
-			{ "BAD", math.max(0, numFlag("Gakuran Rhythm W Bad", 6)) },
-			{ "MISS", math.max(0, numFlag("Gakuran Rhythm W Miss", 3)) },
-		}
-		-- Safe holds: never miss, never roll outer bands that risk head MISS / short ratio
-		if isHold and flag("Gakuran Rhythm Safe Holds", true) then
-			weights[3][2] = 0 -- OKAY
-			weights[4][2] = 0 -- BAD
-			weights[5][2] = 0 -- MISS
-		end
-		local total = 0
-		for _, e in ipairs(weights) do
-			total = total + e[2]
-		end
-		if total <= 0 then
-			return "PERFECT"
-		end
-		local r = math.random() * total
-		local a = 0
-		for _, e in ipairs(weights) do
-			a = a + e[2]
-			if r <= a then
-				return e[1]
-			end
-		end
-		return "PERFECT"
-	end
-
-	local function gradeOffsetMs(grade, windows)
-		local p, g, o, b = windows.PERFECT, windows.GOOD, windows.OKAY, windows.BAD
-		local depth = math.clamp(numFlag("Gakuran Rhythm Band Jitter", 50), 0, 100) / 100
-		local cons = math.clamp(numFlag("Gakuran Rhythm Consistency", 75), 0, 100) / 100
-		depth = depth * (1 - cons * 0.5)
-
-		-- Outer edge of each band, kept clear of the next worse grade / MISS
-		local lo, hi = 0, math.max(0, p - 2)
-		if grade == "GOOD" then
-			lo, hi = p + 1, math.max(p + 1, g - 2)
-		elseif grade == "OKAY" then
-			lo, hi = g + 1, math.max(g + 1, o - 2)
-		elseif grade == "BAD" then
-			-- Stay well inside BAD — old hi≈BAD-1 + frame lag = MISS
-			lo, hi = o + 1, math.max(o + 1, b - TIMING_MARGIN_MS)
-		elseif grade == "MISS" then
-			lo, hi = b + 12, b + 40
-		end
-		hi = math.max(lo, hi)
-		local mid = (lo + hi) * 0.5
-		local half = (hi - lo) * 0.5 * (0.15 + 0.85 * depth)
-		local mag = randRange(math.max(lo, mid - half), math.min(hi, mid + half))
-		local early = math.random(1, 100) <= numFlag("Gakuran Rhythm Early Bias", 48)
-		local off = early and -mag or mag
-		local noise = numFlag("Gakuran Rhythm Reaction Noise", 6) * (1 - cons * 0.5)
-		off = off + randRange(-noise, noise)
-		if flag("Gakuran Rhythm Strict Grades", true) and grade ~= "MISS" then
-			local abs = math.abs(off)
-			if grade == "PERFECT" then
-				abs = math.clamp(abs, 0, p - 1)
-			else
-				abs = math.clamp(abs, lo, hi)
-			end
-			off = (off < 0 and -1 or 1) * abs
-		end
-		-- Hard safety: non-MISS never past BAD - margin
-		if grade ~= "MISS" then
-			local cap = math.max(8, b - TIMING_MARGIN_MS)
-			off = math.clamp(off, -cap, cap)
-		end
-		return off
-	end
-
-	local function clampHitAt(noteT, hitAt, windows)
-		local cap = math.max(0.02, (windows.BAD - TIMING_MARGIN_MS) / 1000)
-		return math.clamp(hitAt, noteT - cap, noteT + cap)
-	end
-
 	local function noteLen(note)
 		local len = tonumber(note.len) or 0
-		if len <= 0 and type(note.endT) == "number" then
+		if len <= 0 and type(note.endT) == "number" and type(note.t) == "number" then
 			len = note.endT - note.t
 		end
 		return len
 	end
 
-	-- Keep reconcile from killing synthetic presses (see header).
+	-- Grade bands (ms absolute). Outer edge kept clear of next worse / MISS.
+	local function gradeBandMs(grade, windows)
+		local p, g, o, b = windows.PERFECT, windows.GOOD, windows.OKAY, windows.BAD
+		if grade == "PERFECT" then
+			return 0, math.max(0, p - 2)
+		elseif grade == "GOOD" then
+			return p + 1, math.max(p + 1, g - 2)
+		elseif grade == "OKAY" then
+			return g + 1, math.max(g + 1, o - 2)
+		elseif grade == "BAD" then
+			return o + 1, math.max(o + 1, b - 16)
+		elseif grade == "MISS" then
+			return b + 12, b + 40
+		end
+		return 0, math.max(0, p - 2)
+	end
+
+	local function rawWeights(isHold)
+		local w = {
+			PERFECT = math.max(0, numFlag("Gakuran Rhythm W Perfect", 40)),
+			GOOD = math.max(0, numFlag("Gakuran Rhythm W Good", 35)),
+			OKAY = math.max(0, numFlag("Gakuran Rhythm W Okay", 16)),
+			BAD = math.max(0, numFlag("Gakuran Rhythm W Bad", 6)),
+			MISS = math.max(0, numFlag("Gakuran Rhythm W Miss", 3)),
+		}
+		if isHold and flag("Gakuran Rhythm Safe Holds", true) then
+			-- Holds: PERFECT/GOOD heads only so ratio can stay ≥0.95
+			w.OKAY = 0
+			w.BAD = 0
+			w.MISS = 0
+			if w.PERFECT + w.GOOD <= 0 then
+				w.PERFECT = 1
+			end
+		end
+		return w
+	end
+
+	-- Quota + anti-streak: rare grades (e.g. OKAY=1) won't clump in a row.
+	local function pickGrade(isHold)
+		local w = rawWeights(isHold)
+		local totalW = 0
+		for _, name in ipairs(GRADE_ORDER) do
+			totalW = totalW + w[name]
+		end
+		if totalW <= 0 then
+			return "PERFECT"
+		end
+
+		local rolled = st.gradeRolls
+		local totalRolled = 0
+		for _, name in ipairs(GRADE_ORDER) do
+			totalRolled = totalRolled + (rolled[name] or 0)
+		end
+
+		-- Effective weight = base * (how far behind quota) * anti-streak
+		local bestName, bestScore = "PERFECT", -1e9
+		for _, name in ipairs(GRADE_ORDER) do
+			local base = w[name]
+			if base > 0 then
+				local share = base / totalW
+				local expected = (totalRolled + 1) * share
+				local have = rolled[name] or 0
+				local deficit = expected - have
+
+				-- Anti-streak: if this grade appeared recently and is rare, crush weight
+				local recentHit = 0
+				local look = st.recentGrades
+				local window = math.min(#look, 12)
+				for i = #look, #look - window + 1, -1 do
+					if look[i] == name then
+						recentHit = recentHit + 1
+					end
+				end
+				local rarity = share
+				local streakPenalty = 1
+				if rarity < 0.08 and recentHit > 0 then
+					streakPenalty = 0.02 -- almost never back-to-back rare grades
+				elseif rarity < 0.20 and recentHit >= 2 then
+					streakPenalty = 0.15
+				elseif recentHit >= 3 then
+					streakPenalty = 0.35
+				end
+
+				-- Prefer grades we're behind on; small random so not fully deterministic
+				local score = (deficit + 0.35) * base * streakPenalty * randRange(0.85, 1.15)
+				if score > bestScore then
+					bestScore = score
+					bestName = name
+				end
+			end
+		end
+
+		return bestName
+	end
+
+	local function rememberGrade(grade)
+		local look = st.recentGrades
+		look[#look + 1] = grade
+		if #look > 24 then
+			table.remove(look, 1)
+		end
+		st.gradeRolls[grade] = (st.gradeRolls[grade] or 0) + 1
+	end
+
+	-- Offset strictly inside the rolled grade band (signed ms).
+	local function gradeOffsetMs(grade, windows)
+		local lo, hi = gradeBandMs(grade, windows)
+		local depth = math.clamp(numFlag("Gakuran Rhythm Band Jitter", 50), 0, 100) / 100
+		local cons = math.clamp(numFlag("Gakuran Rhythm Consistency", 75), 0, 100) / 100
+		depth = depth * (1 - cons * 0.55)
+
+		local mid = (lo + hi) * 0.5
+		local half = (hi - lo) * 0.5 * (0.12 + 0.88 * depth)
+		local mag = randRange(math.max(lo, mid - half), math.min(hi, mid + half))
+
+		local early = math.random(1, 100) <= numFlag("Gakuran Rhythm Early Bias", 48)
+		local off = early and -mag or mag
+
+		local noise = numFlag("Gakuran Rhythm Reaction Noise", 6) * (1 - cons * 0.55)
+		off = off + randRange(-noise, noise)
+
+		-- Always re-clamp into band (noise must not change the judgment)
+		local abs = math.abs(off)
+		if flag("Gakuran Rhythm Strict Grades", true) or grade ~= "MISS" then
+			abs = math.clamp(abs, lo, hi)
+			off = (off < 0 and -1 or 1) * abs
+			if abs == 0 then
+				off = 0
+			end
+		end
+		return off
+	end
+
+	-- Clamp hitAt to the plan's rolled grade band (not the full BAD window).
+	local function clampHitAtToGrade(plan, windows)
+		if not plan or type(plan.noteT) ~= "number" then
+			return
+		end
+		local grade = plan.grade or "PERFECT"
+		if grade == "MISS" then
+			return
+		end
+		local lo, hi = gradeBandMs(grade, windows)
+		local noteT = plan.noteT
+		local offMs = ((plan.hitAt or noteT) - noteT) * 1000
+		local sign = offMs < 0 and -1 or 1
+		local abs = math.clamp(math.abs(offMs), lo, hi)
+		-- Prefer preserving side; if zero-ish, use original sign from offsetMs
+		if math.abs(offMs) < 0.25 then
+			sign = (plan.offsetMs or 0) < 0 and -1 or 1
+			if (plan.offsetMs or 0) == 0 then
+				sign = 1
+			end
+		end
+		plan.hitAt = noteT + (sign * abs) / 1000
+		plan.offsetMs = sign * abs
+	end
+
 	local function latchLane(session, lane, on)
 		if type(session) ~= "table" or type(lane) ~= "number" then
 			return
@@ -467,12 +536,6 @@ return function(ctx)
 		table.clear(st.laneDown)
 	end
 
-	-- Lane free? (no key currently held by us)
-	local function laneHeld(lane)
-		local p = st.laneDown[lane]
-		return p and p.pressed and not p.released
-	end
-
 	local function releasePlan(session, plan, why)
 		if not plan or plan.released then
 			return
@@ -484,8 +547,7 @@ return function(ctx)
 				session:_handleLaneRelease(lane)
 			end)
 			st.laneDown[lane] = nil
-		elseif plan.pressed and not st.laneDown[lane] then
-			-- lost ownership tracking; still try release if key stuck
+		elseif plan.pressed then
 			latchLane(session, lane, false)
 			pcall(function()
 				if session._laneKeyDown and session._laneKeyDown[lane] then
@@ -497,13 +559,12 @@ return function(ctx)
 		debugLog("↑", "L" .. tostring(lane), plan.isHold and "HOLD" or "TAP", why or "")
 	end
 
-	local function pressPlan(session, note, plan, now)
+	local function pressPlan(session, note, plan, now, windows)
 		if plan.pressed then
 			return true
 		end
 		if type(note) == "table" and (note.hit or note.attempted) and not note.holding then
-			-- already consumed by engine without us — mark done
-			if note.hit and note.len <= 0 then
+			if note.hit and (tonumber(note.len) or 0) <= 0 then
 				plan.pressed = true
 				plan.released = true
 				return true
@@ -512,22 +573,26 @@ return function(ctx)
 
 		local lane = plan.lane
 		local noteT = plan.noteT or (type(note) == "table" and note.t) or now
-		local windows = getWindows(session)
-		local maxLate = noteT + math.max(0.02, (windows.BAD - TIMING_MARGIN_MS) / 1000)
+		local _, gradeHi = gradeBandMs(plan.grade or "PERFECT", windows)
+		if (plan.grade or "PERFECT") == "MISS" then
+			gradeHi = windows.BAD + 40
+		end
+		-- Latest press still inside rolled grade (with tiny frame slack)
+		local maxLate = noteT + (gradeHi + 4) / 1000
 
-		-- If we still hold this lane for a previous plan, free it first (same-frame chain)
 		local owner = st.laneDown[lane]
 		if owner and owner ~= plan and owner.pressed and not owner.released then
 			if owner.isHold then
-				-- Never cut a hold early — wait until its releaseAt
 				local freeAt = owner.releaseAt or ((owner.holdEnd or now) + 0.02)
 				if now < freeAt then
-					-- Only delay if the note is still hittable after freeAt
+					-- Wait for hold; do NOT schedule past our grade band
 					if freeAt <= maxLate then
-						plan.hitAt = freeAt + 0.006
+						plan.hitAt = freeAt + 0.004
 					else
-						-- Would miss after hold — snap to last safe moment; hold will free first if possible
-						plan.hitAt = maxLate
+						-- Hold blocks past our band — wait; press ASAP when free
+						-- (grade may degrade; rare, only dense chart after long holds)
+						plan.hitAt = freeAt + 0.004
+						plan.forcedLate = true
 					end
 					return false
 				end
@@ -535,7 +600,6 @@ return function(ctx)
 			releasePlan(session, owner, "chain")
 		end
 
-		-- If engine thinks key is down but we don't own it, release first
 		if session._laneKeyDown and session._laneKeyDown[lane] and st.laneDown[lane] ~= plan then
 			latchLane(session, lane, false)
 			pcall(function()
@@ -543,43 +607,50 @@ return function(ctx)
 			end)
 		end
 
-		-- Latch BEFORE press so same-frame _step reconcile cannot drop us
-		latchLane(session, lane, true)
+		-- If we are early vs planned hitAt, wait (unless already past)
+		if type(plan.hitAt) == "number" and now + 0.0005 < plan.hitAt and not plan.forcedLate then
+			return false
+		end
 
+		-- If lag put us past grade band, snap to band edge (same grade), not BAD edge
+		if type(plan.hitAt) == "number" and now > maxLate and not plan.forcedLate then
+			-- Too late for rolled grade — still try if within BAD so we don't miss
+			local badCap = noteT + (windows.BAD - 8) / 1000
+			if now > badCap then
+				plan.pressed = true
+				plan.released = true
+				st.skips = (st.skips or 0) + 1
+				debugLog("drop late", "L" .. tostring(lane))
+				return false
+			end
+		end
+
+		latchLane(session, lane, true)
 		local ok, err = pcall(function()
 			session:_handleLanePress(lane)
 		end)
 		if not ok then
 			latchLane(session, lane, false)
 			debugLog("press fail", err)
-			plan.hitAt = now + 0.01
+			plan.hitAt = now + 0.008
 			return false
 		end
-
-		-- Re-assert after press (press sets _laneKeyDown; keep touch latch)
 		latchLane(session, lane, true)
 
 		plan.pressed = true
+		plan.pressedAt = now
 		st.laneDown[lane] = plan
 		st.hits = (st.hits or 0) + 1
 
-		-- Verify engine accepted head (holds set hit=true; taps may clear from active)
 		if plan.isHold and type(note) == "table" then
 			if note.hit ~= true and note.attempted == true then
-				-- Head was MISS — holding won't work. Release immediately.
 				debugLog("hold head MISS", "L" .. tostring(lane))
 				releasePlan(session, plan, "head-miss")
 				return false
 			end
 		end
 
-		debugLog(
-			"↓",
-			"L" .. tostring(lane),
-			plan.isHold and "HOLD" or "TAP",
-			plan.grade,
-			string.format("%+.0fms", plan.offsetMs or 0)
-		)
+		debugLog("↓", "L" .. tostring(lane), plan.isHold and "HOLD" or "TAP", plan.grade, string.format("%+.0fms", (now - noteT) * 1000))
 		return true
 	end
 
@@ -595,76 +666,82 @@ return function(ctx)
 		end
 
 		local eta = note.t - now
-		if eta > lookahead or eta < -0.15 then
+		if eta > lookahead or eta < -0.12 then
 			return
 		end
 
 		local len = noteLen(note)
 		local isHold = len > 0.05
 		local grade = pickGrade(isHold)
-		if isHold and (grade == "MISS" or grade == "BAD" or grade == "OKAY") and flag("Gakuran Rhythm Safe Holds", true) then
-			-- Prefer PERFECT head for holds (ratio needs full tail)
-			grade = (math.random() < 0.85) and "PERFECT" or "GOOD"
-		end
-		st.gradeRolls[grade] = (st.gradeRolls[grade] or 0) + 1
 
 		if grade == "MISS" then
-			-- Intentional skip taps only — still never skip holds
 			if isHold then
 				grade = "PERFECT"
 			else
+				rememberGrade("MISS")
 				st.planned[note] = {
 					skip = true,
 					grade = "MISS",
 					lane = note.lane,
 					noteT = note.t,
 					isHold = false,
+					pressed = false,
+					released = false,
 				}
 				st.skips = (st.skips or 0) + 1
 				return
 			end
 		end
 
+		rememberGrade(grade)
+
 		local offsetMs = gradeOffsetMs(grade, windows)
-		-- Holds: keep head VERY tight (late head kills 95% ratio)
 		if isHold and flag("Gakuran Rhythm Safe Holds", true) then
-			local cap = math.min(windows.PERFECT * 0.65, 18)
+			-- Keep head inside PERFECT window so hold ratio can stay ≥0.95
+			local cap = math.min(windows.PERFECT * 0.55, 16)
 			offsetMs = math.clamp(offsetMs, -cap, cap)
+			if math.abs(offsetMs) > windows.PERFECT then
+				offsetMs = (offsetMs < 0 and -1 or 1) * cap
+			end
+			-- Re-label if we forced perfect head
+			if grade ~= "PERFECT" and grade ~= "GOOD" then
+				grade = "PERFECT"
+			end
 		end
 
-		local hitAt = clampHitAt(note.t, note.t + offsetMs / 1000, windows)
-
+		local hitAt = note.t + offsetMs / 1000
 		local holdEnd = isHold and (note.t + len) or nil
-		local releaseAt
-		if isHold then
-			-- Engine auto-scores at holdEnd while key still down.
-			-- Release slightly AFTER so ratio hits 1.0.
-			local extra = math.clamp(numFlag("Gakuran Rhythm Hold Extra Ms", 25), 10, 80) / 1000
-			releaseAt = holdEnd + extra
-		else
-			local tap = math.clamp(numFlag("Gakuran Rhythm Tap Length", 40), 20, 100) / 1000
-			releaseAt = hitAt + tap
-		end
+		local holdExtra = math.clamp(numFlag("Gakuran Rhythm Hold Extra Ms", 25), 10, 80) / 1000
+		local tapLen = math.clamp(numFlag("Gakuran Rhythm Tap Length", 40), 20, 100) / 1000
 
-		st.planned[note] = {
+		local plan = {
 			skip = false,
 			grade = grade,
 			lane = note.lane,
 			noteT = note.t,
 			hitAt = hitAt,
-			releaseAt = releaseAt,
+			releaseAt = isHold and (holdEnd + holdExtra) or (hitAt + tapLen),
 			holdEnd = holdEnd,
 			len = len,
 			isHold = isHold,
 			offsetMs = offsetMs,
 			pressed = false,
 			released = false,
-			note = note, -- live ref for engine state
+			note = note,
 		}
+		clampHitAtToGrade(plan, windows)
+		if not plan.isHold then
+			plan.releaseAt = plan.hitAt + tapLen
+		end
+		st.planned[note] = plan
 	end
 
-	-- Serialize same-lane plans so holds never get cut and taps free the lane for holds.
-	-- Never push a note outside the hittable window (that was causing "OKAY → MISS").
+	--[[
+	  Same-lane schedule:
+	  - Never push next.hitAt outside its rolled grade band
+	  - Resolve conflicts by shortening previous TAP release
+	  - Holds keep full tail; next waits only if still inside its grade band
+	]]
 	local function fixLaneSchedule(windows)
 		local byLane = {}
 		for _, plan in pairs(st.planned) do
@@ -674,64 +751,77 @@ return function(ctx)
 			end
 		end
 
-		local maxOff = math.max(0.02, (windows.BAD - TIMING_MARGIN_MS) / 1000)
 		local tapLen = math.clamp(numFlag("Gakuran Rhythm Tap Length", 40), 20, 100) / 1000
 		local holdExtra = math.clamp(numFlag("Gakuran Rhythm Hold Extra Ms", 25), 10, 80) / 1000
 
 		for _, list in pairs(byLane) do
 			table.sort(list, function(a, b)
-				return (a.noteT or a.hitAt or 0) < (b.noteT or b.hitAt or 0)
+				return (a.noteT or 0) < (b.noteT or 0)
 			end)
 
 			for i = 1, #list - 1 do
 				local a, b = list[i], list[i + 1]
-				local bNoteT = b.noteT or b.hitAt or 0
-				local bMax = bNoteT + maxOff
-				local bMin = bNoteT - maxOff
+				if a.pressed then
+					-- live owner handled in pressPlan
+				else
+					clampHitAtToGrade(a, windows)
+				end
+				if not b.pressed then
+					clampHitAtToGrade(b, windows)
+				end
+
+				local bLo, bHi = gradeBandMs(b.grade or "PERFECT", windows)
+				local bNoteT = b.noteT or 0
+				local bEarliest = bNoteT - bHi / 1000
+				local bLatest = bNoteT + bHi / 1000
+				-- keep intended side if possible
+				local bTarget = b.hitAt or bNoteT
 
 				if a.isHold then
-					local freeAt = (a.releaseAt or a.holdEnd or a.hitAt or 0) + 0.008
-					if (b.hitAt or 0) < freeAt then
-						if freeAt <= bMax then
+					local freeAt = (a.releaseAt or a.holdEnd or a.hitAt or 0) + 0.006
+					if bTarget < freeAt then
+						if freeAt <= bLatest then
 							b.hitAt = freeAt
 						else
-							-- Can't wait for full hold tail without missing next — still keep hold,
-							-- snap next to last safe late (pressPlan may wait if lane busy)
-							b.hitAt = bMax
+							-- Cannot both finish hold and keep next grade — keep hold,
+							-- next presses ASAP after free (forcedLate path)
+							b.hitAt = freeAt
+							b.forcedLate = true
 						end
 					end
 				else
-					-- Tap: shorten previous release so next stays in window
-					local wantNext = b.hitAt or bNoteT
-					local freeBy = math.min(wantNext - 0.008, bMax - 0.01)
-					local minTap = (a.hitAt or a.noteT or 0) + 0.018
-					if freeBy < minTap then
-						freeBy = minTap
+					-- Previous is tap: free lane before next target
+					local needFreeBy = math.min(bTarget, bLatest) - 0.006
+					local minTapEnd = (a.hitAt or a.noteT or 0) + 0.016
+					if needFreeBy < minTapEnd then
+						needFreeBy = minTapEnd
 					end
-					a.releaseAt = math.clamp(math.min(a.releaseAt or freeBy, freeBy), minTap, (a.hitAt or minTap) + tapLen)
-					if a.releaseAt + 0.006 > (b.hitAt or wantNext) then
-						local pushed = a.releaseAt + 0.008
-						b.hitAt = math.clamp(pushed, bMin, bMax)
+					a.releaseAt = math.min(a.releaseAt or (a.hitAt + tapLen), needFreeBy)
+					if a.releaseAt < minTapEnd then
+						a.releaseAt = minTapEnd
+					end
+					if a.releaseAt + 0.004 > bTarget then
+						local pushed = a.releaseAt + 0.005
+						if pushed <= bLatest then
+							b.hitAt = math.max(pushed, bEarliest)
+						else
+							-- Stay in band: keep b at latest in-band, cut a more
+							b.hitAt = bLatest
+							a.releaseAt = math.min(a.releaseAt, b.hitAt - 0.005)
+							if a.releaseAt < minTapEnd then
+								a.releaseAt = minTapEnd
+							end
+						end
 					end
 				end
 
-				b.hitAt = clampHitAt(bNoteT, b.hitAt or bNoteT, windows)
+				if not b.pressed and not b.forcedLate then
+					clampHitAtToGrade(b, windows)
+				end
 				if b.isHold and b.holdEnd then
 					b.releaseAt = b.holdEnd + holdExtra
 				elseif not b.isHold then
 					b.releaseAt = (b.hitAt or bNoteT) + tapLen
-				end
-			end
-
-			-- Final pass: every unpressed plan stays inside window
-			for _, plan in ipairs(list) do
-				if not plan.pressed and type(plan.noteT) == "number" and type(plan.hitAt) == "number" then
-					plan.hitAt = clampHitAt(plan.noteT, plan.hitAt, windows)
-					if not plan.isHold then
-						plan.releaseAt = plan.hitAt + tapLen
-					elseif plan.holdEnd then
-						plan.releaseAt = plan.holdEnd + holdExtra
-					end
 				end
 			end
 		end
@@ -752,6 +842,8 @@ return function(ctx)
 			st.hits = 0
 			st.skips = 0
 			st.gradeRolls = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
+			st.gradeActual = { PERFECT = 0, GOOD = 0, OKAY = 0, BAD = 0, MISS = 0 }
+			st.recentGrades = {}
 			local p = session._playable
 			local title = type(p) == "table" and tostring(p.title or p.songId or "") or ""
 			local mode = type(p) == "table" and tostring(p.mode or "?") or "?"
@@ -772,7 +864,6 @@ return function(ctx)
 
 		local active = session._active
 		if type(active) == "table" then
-			-- _active can be array or map
 			for _, note in pairs(active) do
 				if type(note) == "table" then
 					planNote(note, now, windows, lookahead)
@@ -782,14 +873,13 @@ return function(ctx)
 
 		fixLaneSchedule(windows)
 
-		-- Reassert latches every frame for keys we still own (beats reconcile + any drop)
+		-- Hold latch reassert
 		for lane, plan in pairs(st.laneDown) do
 			if plan and plan.pressed and not plan.released then
 				latchLane(session, lane, true)
-				-- Hold still running but engine dropped key / holding flag → re-press
 				if plan.isHold then
 					local note = plan.note
-					local needEnd = plan.holdEnd or (plan.noteT and plan.len and (plan.noteT + plan.len))
+					local needEnd = plan.holdEnd
 					local stillNeed = type(needEnd) == "number" and now < needEnd - 0.01
 					local keyDown = session._laneKeyDown and session._laneKeyDown[lane]
 					if stillNeed and type(note) == "table" and not note.holdJudgment then
@@ -798,24 +888,20 @@ return function(ctx)
 								session:_handleLanePress(lane)
 							end)
 							latchLane(session, lane, true)
-							debugLog("rehold", "L" .. tostring(lane))
 						end
 					end
 				end
 			end
 		end
 
-		-- Releases first (so same-frame tap→hold works)
+		-- Releases
 		for _, plan in pairs(st.planned) do
 			if plan and plan.pressed and not plan.released then
 				local note = plan.note
-				-- Hold finished by engine (auto-score at end) → release key
 				if plan.isHold and type(note) == "table" and note.holdJudgment then
 					releasePlan(session, plan, "engine-done")
 				elseif type(plan.releaseAt) == "number" and now >= plan.releaseAt then
-					-- For holds: only if past hold end
 					if plan.isHold and plan.holdEnd and now < plan.holdEnd then
-						-- not yet — force wait
 						plan.releaseAt = plan.holdEnd + 0.02
 						latchLane(session, plan.lane, true)
 					else
@@ -825,48 +911,27 @@ return function(ctx)
 			end
 		end
 
-		-- Presses (incl. late catch-up: if we slipped past hitAt but still in window, hit now)
-		local maxOff = math.max(0.02, (windows.BAD - TIMING_MARGIN_MS) / 1000)
+		-- Presses
 		local due = {}
 		for note, plan in pairs(st.planned) do
 			if plan and not plan.skip and not plan.pressed and type(plan.hitAt) == "number" then
-				local noteT = plan.noteT or plan.hitAt
-				local latest = noteT + maxOff
-				local earliest = noteT - maxOff
-				-- Rescue: scheduled too late / lag — snap into window
-				if plan.hitAt > latest then
-					plan.hitAt = latest
-				elseif plan.hitAt < earliest then
-					plan.hitAt = earliest
-				end
-				if now >= plan.hitAt then
-					-- If already past latest, only try if engine might still accept (tiny grace)
-					if now <= latest + 0.012 then
-						table.insert(due, { note = note, plan = plan })
-					else
-						-- Unhittable — abandon so we don't ghost-press and desync
-						plan.pressed = true
-						plan.released = true
-						st.skips = (st.skips or 0) + 1
-						debugLog("drop late", "L" .. tostring(plan.lane), string.format("%+.0fms", (now - noteT) * 1000))
-					end
+				if now >= plan.hitAt - 0.0005 then
+					table.insert(due, { note = note, plan = plan })
 				end
 			end
 		end
 		table.sort(due, function(a, b)
 			local da, db_ = a.plan.hitAt or 0, b.plan.hitAt or 0
 			if math.abs(da - db_) < 0.0005 then
-				-- simultaneous: all lanes press; holds slightly first on same lane already scheduled
 				return (a.plan.lane or 0) < (b.plan.lane or 0)
 			end
 			return da < db_
 		end)
-
 		for _, item in ipairs(due) do
-			pressPlan(session, item.note, item.plan, now)
+			pressPlan(session, item.note, item.plan, now, windows)
 		end
 
-		-- Cleanup old plans
+		-- Cleanup
 		for note, plan in pairs(st.planned) do
 			local t0 = plan.noteT or 0
 			local maxAge = plan.isHold and ((plan.holdEnd or t0) - t0 + 2.5) or 2
@@ -895,14 +960,32 @@ return function(ctx)
 		local statusAccum = 0
 		local resolveAccum = 0
 
+		-- Kill any leftover live V2 bot from earlier hotpatches
+		pcall(function()
+			local env = (type(getgenv) == "function" and getgenv()) or _G
+			local fix = env.__xhRhythmLegitFix
+			if type(fix) == "table" then
+				if fix.conn then
+					pcall(function()
+						fix.conn:Disconnect()
+					end)
+				end
+				if fix.guardConn then
+					pcall(function()
+						fix.guardConn:Disconnect()
+					end)
+				end
+				env.__xhRhythmLegitFix = nil
+			end
+		end)
+
 		ctx.addConnection(RunService.Heartbeat, function(dt)
 			if ctx.state.unloading then
 				return
 			end
 			if not flag("Gakuran Auto Rhythm", false) then
 				if next(st.planned) then
-					local session = getSession()
-					clearAll(session)
+					clearAll(getSession())
 				end
 				return
 			end
@@ -950,17 +1033,23 @@ return function(ctx)
 					)
 				)
 				local r = st.gradeRolls
+				local tw = rawWeights(false)
+				local sum = tw.PERFECT + tw.GOOD + tw.OKAY + tw.BAD + tw.MISS
 				setLabel(
 					"rhythmMix",
 					"Mix: ",
 					string.format(
-						"plan P%d G%d O%d B%d M%d · hits %d",
+						"w %d/%d/%d/%d/%d · plan P%d G%d O%d B%d M%d",
+						tw.PERFECT,
+						tw.GOOD,
+						tw.OKAY,
+						tw.BAD,
+						tw.MISS,
 						r.PERFECT or 0,
 						r.GOOD or 0,
 						r.OKAY or 0,
 						r.BAD or 0,
-						r.MISS or 0,
-						st.hits or 0
+						r.MISS or 0
 					)
 				)
 			end
@@ -974,8 +1063,7 @@ return function(ctx)
 	end
 
 	library:AddCleanup(function()
-		local session = getSession()
-		clearAll(session)
+		clearAll(getSession())
 		st.service = nil
 		st.sessionToken = nil
 	end)
