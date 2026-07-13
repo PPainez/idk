@@ -175,8 +175,9 @@ assert(uiResult, "[xanhub gakuran] UI module failed")
 ctx.columns = uiResult.columns
 ctx.tabs = uiResult.tabs
 
--- Load VC Bypass (adds to QOL)
+-- Load VC Bypass — store on ctx so qol.luau buttons reach it at click time
 local vcController = safeLoadFeature("games/gakuran/modules/vc_bypass.luau")
+ctx.vcController = vcController
 
 local devtoolsController = safeLoadFeature("universal/modules/devtools.luau")
 local parryBuilder = safeLoadFeature("games/gakuran/modules/parry_builder.luau")
@@ -266,7 +267,7 @@ task.defer(function()
 
 	safeSetup("devtools", devtoolsController)
 	safeSetup("parry_builder", parryBuilder)
-	safeSetup("vc_bypass", vcController)  -- VC controller
+	-- vc_bypass has no setup() — it's fully wired at load time via ctx.addConnection
 
 	if state.unloading then
 		return
