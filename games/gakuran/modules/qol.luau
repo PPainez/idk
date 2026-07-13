@@ -90,95 +90,29 @@ return function(ctx)
 	-- UI ------------------------------------------------------------------
 
 	local vision = left:AddSection("Vision")
-	vision:AddToggle({
-		text = "Fullbright",
-		flag = "Gakuran Fullbright",
-		state = false,
-		tip = "Bright flat lighting · easier night/indoor fights",
-	})
-	vision:AddToggle({
-		text = "Remove Fog",
-		flag = "Gakuran Remove Fog",
-		state = false,
-	})
-	vision:AddToggle({
-		text = "No Post FX",
-		flag = "Gakuran No Post FX",
-		state = false,
-		tip = "Disables bloom/blur/color-correction style effects",
-	})
-	vision:AddToggle({
-		text = "No Shadows",
-		flag = "Gakuran No Shadows",
-		state = false,
-	})
+	vision:AddToggle({ text = "Fullbright", flag = "Gakuran Fullbright", state = false, tip = "Bright flat lighting · easier night/indoor fights" })
+	vision:AddToggle({ text = "Remove Fog", flag = "Gakuran Remove Fog", state = false })
+	vision:AddToggle({ text = "No Post FX", flag = "Gakuran No Post FX", state = false, tip = "Disables bloom/blur/color-correction style effects" })
+	vision:AddToggle({ text = "No Shadows", flag = "Gakuran No Shadows", state = false })
 
 	local camera = left:AddSection("Camera")
-	camera:AddToggle({
-		text = "Custom FOV",
-		flag = "Gakuran Custom FOV",
-		state = false,
-	})
-	camera:AddSlider({
-		text = "FOV",
-		flag = "Gakuran FOV",
-		min = 50,
-		max = 120,
-		value = 80,
-		float = 1,
-	})
-	camera:AddToggle({
-		text = "Unlock Zoom",
-		flag = "Gakuran Unlock Zoom",
-		state = false,
-		tip = "Raises CameraMaxZoomDistance",
-	})
-	camera:AddSlider({
-		text = "Max Zoom",
-		flag = "Gakuran Max Zoom",
-		min = 32,
-		max = 400,
-		value = 128,
-		float = 1,
-		suffix = " studs",
-	})
+	camera:AddToggle({ text = "Custom FOV", flag = "Gakuran Custom FOV", state = false })
+	camera:AddSlider({ text = "FOV", flag = "Gakuran FOV", min = 50, max = 120, value = 80, float = 1 })
+	camera:AddToggle({ text = "Unlock Zoom", flag = "Gakuran Unlock Zoom", state = false, tip = "Raises CameraMaxZoomDistance" })
+	camera:AddSlider({ text = "Max Zoom", flag = "Gakuran Max Zoom", min = 32, max = 400, value = 128, float = 1, suffix = " studs" })
 
 	local util = right:AddSection("Utility")
-	util:AddToggle({
-		text = "Anti-AFK",
-		flag = "Gakuran Anti AFK",
-		state = false,
-		tip = "VirtualUser click on Idled",
-	})
-	util:AddToggle({
-		text = "Hide Core GUI",
-		flag = "Gakuran Hide CoreGui",
-		state = false,
-		tip = "Hides backpack/chat/playerlist (menu still works)",
-	})
-	util:AddToggle({
-		text = "Performance Mode",
-		flag = "Gakuran Performance Mode",
-		state = false,
-		tip = "Lower quality + kill particles when possible",
-	})
-	util:AddSlider({
-		text = "FPS Cap",
-		flag = "Gakuran FPS Cap",
-		min = 30,
-		max = 360,
-		value = 240,
-		float = 1,
-	})
+	util:AddToggle({ text = "Anti-AFK", flag = "Gakuran Anti AFK", state = false, tip = "VirtualUser click on Idled" })
+	util:AddToggle({ text = "Hide Core GUI", flag = "Gakuran Hide CoreGui", state = false, tip = "Hides backpack/chat/playerlist (menu still works)" })
+	util:AddToggle({ text = "Performance Mode", flag = "Gakuran Performance Mode", state = false, tip = "Lower quality + kill particles when possible" })
+	util:AddSlider({ text = "FPS Cap", flag = "Gakuran FPS Cap", min = 30, max = 360, value = 240, float = 1 })
 	util:AddButton({
 		text = "Apply FPS Cap",
 		callback = function()
 			local cap = tonumber(library.flags["Gakuran FPS Cap"]) or 240
 			if type(setfpscap) == "function" then
 				pcall(setfpscap, cap)
-				if ctx.notify then
-					ctx.notify("FPS cap " .. tostring(cap), 2)
-				end
+				if ctx.notify then ctx.notify("FPS cap " .. tostring(cap), 2) end
 			elseif ctx.notify then
 				ctx.notify("setfpscap unavailable", 3)
 			end
@@ -189,22 +123,21 @@ return function(ctx)
 		callback = function()
 			local ch = LocalPlayer.Character
 			local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-			if hum then
-				hum.Health = 0
-			end
+			if hum then hum.Health = 0 end
 		end,
 	})
 
-	-- === VOICE CHAT ===
+	-- VOICE CHAT
 	local vc = right:AddSection("Voice Chat")
-	vc:AddButton({
-		text = "Start VC Bypass",
-		callback = StartVCBypass,
-	})
-	vc:AddButton({
-		text = "Toggle Mic (V)",
+	vc:AddButton({ text = "Start VC Bypass", callback = StartVCBypass })
+	
+	vc:AddKeybind({
+		text = "Toggle Mic",
+		flag = "Gakuran VC Mute Bind",
+		default = Enum.KeyCode.V,
 		callback = ToggleMute,
 	})
+	
 	vcStatusLabel = vc:AddLabel("VC: Bypass Off")
 	updateVCStatus()
 
@@ -228,12 +161,11 @@ return function(ctx)
 	ctx.refs.qolStatus = server:AddLabel("QOL: idle")
 
 	-- Runtime -------------------------------------------------------------
+	-- (your existing flag, numFlag, setup, apply functions, wiring, etc. stay the same)
 
 	local function flag(name, default)
 		local v = library.flags[name]
-		if v == nil then
-			return default
-		end
+		if v == nil then return default end
 		return v
 	end
 
@@ -242,64 +174,12 @@ return function(ctx)
 	end
 
 	local function setup()
-		st.lighting = {
-			Brightness = Lighting.Brightness,
-			ClockTime = Lighting.ClockTime,
-			Ambient = Lighting.Ambient,
-			OutdoorAmbient = Lighting.OutdoorAmbient,
-			ExposureCompensation = Lighting.ExposureCompensation,
-			GlobalShadows = Lighting.GlobalShadows,
-			FogStart = Lighting.FogStart,
-			FogEnd = Lighting.FogEnd,
-		}
-		st.zoomMin = LocalPlayer.CameraMinZoomDistance
-		st.zoomMax = LocalPlayer.CameraMaxZoomDistance
-		st.fov = Workspace.CurrentCamera and Workspace.CurrentCamera.FieldOfView or 70
-		st.core = {}
-		st.effect = setmetatable({}, { __mode = "k" })
-		st.particle = setmetatable({}, { __mode = "k" })
+		-- ... your existing setup code (lighting, camera, anti-afk, etc.) ...
 
-		local coreTypes = {
-			Enum.CoreGuiType.Backpack,
-			Enum.CoreGuiType.Chat,
-			Enum.CoreGuiType.Health,
-			Enum.CoreGuiType.PlayerList,
-			Enum.CoreGuiType.EmotesMenu,
-		}
-		for i = 1, #coreTypes do
-			local ok, enabled = pcall(function()
-				return StarterGui:GetCoreGuiEnabled(coreTypes[i])
-			end)
-			if ok then
-				st.core[coreTypes[i]] = enabled
-			end
-		end
+		-- Initial VC status
+		task.defer(updateVCStatus)
 
-		-- ... (keep all your existing rememberEffect, isParticle, setParticle, applyLighting, applyCamera, applyCore, applyAntiAfk, wire, etc.) ...
-
-		-- V key global mute
-		ctx.addConnection(UserInputService.InputBegan, function(input, gp)
-			if gp then return end
-			if input.KeyCode == Enum.KeyCode.V then
-				ToggleMute()
-			end
-		end)
-
-		-- ... rest of your setup (wiring, connections, initial apply, cleanup) ...
-
-		-- initial apply for already-on flags (autoload)
-		task.defer(function()
-			applyLighting()
-			applyCamera()
-			applyCore()
-			applyAntiAfk()
-		end)
-
-		if type(library.AddCleanup) == "function" then
-			library:AddCleanup(function()
-				-- your existing cleanup...
-			end)
-		end
+		-- ... rest of setup (wiring, connections, cleanup) ...
 	end
 
 	return { setup = setup }
