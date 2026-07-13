@@ -246,58 +246,54 @@ local SEED = {
 	["85931837451298"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["114511731321756"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["74690341409113"] = { name = "GuardbreakEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
-	-- Basic (Combat.BasicAnims — style M1≈0.32, M2≈0.525; no Crit anim on Basic)
-	["83491849294956"] = { name = "1stM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Basic 1
-	["89420531853362"] = { name = "2ndM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Basic 2
-	["83730275893449"] = { name = "3rdM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Basic 3
-	["106980660082799"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 }, -- Basic 4
-	["78888626472394"] = { name = "M2", kind = "M2", hitDelay = 0.525, window = 0.125 }, -- Basic M2 (heavy, not Crit)
+	-- Basic (0.32+0.02 flat · M2 0.525)
+	["83491849294956"] = { name = "1stM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["89420531853362"] = { name = "2ndM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["83730275893449"] = { name = "3rdM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["106980660082799"] = { name = "4thM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["78888626472394"] = { name = "M2", kind = "M2", hitDelay = 0.525, window = 0.15 },
 
-	-- Boxing (Combat.BoxingAnims — style M1HitboxDelay≈0.32, M2≈0.43)
-	["137980914350618"] = { name = "1stM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 1
-	["100408082509740"] = { name = "2ndM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 2
-	["94803478352691"] = { name = "3rdM1", kind = "M1", hitDelay = 0.32, window = 0.125 }, -- Boxing 3
-	["78695517680318"] = { name = "4thM1", kind = "M1", hitDelay = 0.35, window = 0.125 }, -- Boxing 4 (+offset)
-	["132022052139564"] = { name = "M2", kind = "M2", hitDelay = 0.43, window = 0.125 }, -- Boxing M2
-	-- Boxing non-attacks (also harvested; kept hard so remotes never false-positive)
-	-- Idle 132695766056641, Walk 135133599113049, Blocking 118147060185189, BlockHit 136970699228453
-	-- Capoeira (scaled contact: 362 / 442 / 362 / 292 ms — 2nd is much later)
-	["125976167173936"] = { name = "1stM1", kind = "M1", hitDelay = 0.362, window = 0.125 },
-	["134945199381140"] = { name = "2ndM1", kind = "M1", hitDelay = 0.442, window = 0.125 },
-	["117877243065533"] = { name = "3rdM1", kind = "M1", hitDelay = 0.362, window = 0.125 },
-	["106965238908791"] = { name = "4thM1", kind = "M1", hitDelay = 0.292, window = 0.125 },
-	-- Capoeira M2 spin/table kick — live: len≈1.88s, M2HitboxDelay=0.45, M2HitboxDuration=0.32
-	["131071815103338"] = { name = "M2", kind = "M2", hitDelay = 0.45, window = 0.32, style = "capoeira" },
-	-- Capoeira Idle/Walk/Block also blacklisted via harvest
-	-- Hakari (scaled 452/472/452/502)
-	["76236532060812"] = { name = "1stM1", kind = "M1", hitDelay = 0.452, window = 0.125 },
-	["74206130671324"] = { name = "2ndM1", kind = "M1", hitDelay = 0.472, window = 0.125 },
-	["71919935695307"] = { name = "3rdM1", kind = "M1", hitDelay = 0.452, window = 0.125 },
-	["122861547142657"] = { name = "4thM1", kind = "M1", hitDelay = 0.502, window = 0.125 },
-	["92851992709496"] = { name = "M2", kind = "M2", hitDelay = 0.59, window = 0.125 },
-	-- HakariOther
-	["126612786608030"] = { name = "1stM1", kind = "M1", hitDelay = 0.452, window = 0.125 },
-	["113719263885794"] = { name = "2ndM1", kind = "M1", hitDelay = 0.472, window = 0.125 },
-	["136305578634960"] = { name = "3rdM1", kind = "M1", hitDelay = 0.452, window = 0.125 },
-	["89039586375625"] = { name = "4thM1", kind = "M1", hitDelay = 0.502, window = 0.125 },
-	["101619248052969"] = { name = "M2", kind = "M2", hitDelay = 0.59, window = 0.125 },
-	["82855179231529"] = { name = "MomentumM2", kind = "M2", hitDelay = 0.59, window = 0.125 },
-	-- Karate (scaled 290/327/402/477)
-	["137837926745158"] = { name = "1stM1", kind = "M1", hitDelay = 0.290, window = 0.125 },
-	["100981571094705"] = { name = "2ndM1", kind = "M1", hitDelay = 0.327, window = 0.125 },
-	["130865087635587"] = { name = "3rdM1", kind = "M1", hitDelay = 0.402, window = 0.125 },
-	["86495068205420"] = { name = "4thM1", kind = "M1", hitDelay = 0.477, window = 0.125 },
-	["120393553812903"] = { name = "M2", kind = "M2", hitDelay = 0.4875, window = 0.125 },
+	-- Boxing (0.32+0.02/0.02/0.02/0.06 · M2 0.43)
+	["137980914350618"] = { name = "1stM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["100408082509740"] = { name = "2ndM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["94803478352691"] = { name = "3rdM1", kind = "M1", hitDelay = 0.34, window = 0.15 },
+	["78695517680318"] = { name = "4thM1", kind = "M1", hitDelay = 0.38, window = 0.15 },
+	["132022052139564"] = { name = "M2", kind = "M2", hitDelay = 0.43, window = 0.15 },
+	-- Capoeira (0.33+0.02/0.10/0.02/-0.05 · M2 0.45 / dur 0.32)
+	["125976167173936"] = { name = "1stM1", kind = "M1", hitDelay = 0.35, window = 0.15 },
+	["134945199381140"] = { name = "2ndM1", kind = "M1", hitDelay = 0.43, window = 0.15 },
+	["117877243065533"] = { name = "3rdM1", kind = "M1", hitDelay = 0.35, window = 0.15 },
+	["106965238908791"] = { name = "4thM1", kind = "M1", hitDelay = 0.28, window = 0.15 },
+	["131071815103338"] = { name = "M2", kind = "M2", hitDelay = 0.45, window = 0.32 },
+	-- Hakari (0.28+0.16/0.18/0.16/0.21 · M2 0.59)
+	["76236532060812"] = { name = "1stM1", kind = "M1", hitDelay = 0.44, window = 0.15 },
+	["74206130671324"] = { name = "2ndM1", kind = "M1", hitDelay = 0.46, window = 0.15 },
+	["71919935695307"] = { name = "3rdM1", kind = "M1", hitDelay = 0.44, window = 0.15 },
+	["122861547142657"] = { name = "4thM1", kind = "M1", hitDelay = 0.49, window = 0.15 },
+	["92851992709496"] = { name = "M2", kind = "M2", hitDelay = 0.59, window = 0.16 },
+	-- HakariOther (same delays as Hakari)
+	["126612786608030"] = { name = "1stM1", kind = "M1", hitDelay = 0.44, window = 0.15 },
+	["113719263885794"] = { name = "2ndM1", kind = "M1", hitDelay = 0.46, window = 0.15 },
+	["136305578634960"] = { name = "3rdM1", kind = "M1", hitDelay = 0.44, window = 0.15 },
+	["89039586375625"] = { name = "4thM1", kind = "M1", hitDelay = 0.49, window = 0.15 },
+	["101619248052969"] = { name = "M2", kind = "M2", hitDelay = 0.59, window = 0.16 },
+	["82855179231529"] = { name = "MomentumM2", kind = "M2", hitDelay = 0.59, window = 0.16 },
+	-- Karate (0.24+0.0375/0.075/0.15/0.225 · M2 0.4875) live Cl0wn_sh1111 EHits also seen
+	["137837926745158"] = { name = "1stM1", kind = "M1", hitDelay = 0.277, window = 0.15 },
+	["100981571094705"] = { name = "2ndM1", kind = "M1", hitDelay = 0.315, window = 0.15 },
+	["130865087635587"] = { name = "3rdM1", kind = "M1", hitDelay = 0.39, window = 0.15 },
+	["86495068205420"] = { name = "4thM1", kind = "M1", hitDelay = 0.465, window = 0.15 },
+	["120393553812903"] = { name = "M2", kind = "M2", hitDelay = 0.4875, window = 0.15 },
 	["101347661150789"] = { name = "4thEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	["90752347516770"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
-	-- Kure
-	["82904229252991"] = { name = "1stM1", kind = "M1", hitDelay = 0.332, window = 0.125 },
-	["103732110215321"] = { name = "2ndM1", kind = "M1", hitDelay = 0.332, window = 0.125 },
-	["103964436023727"] = { name = "3rdM1", kind = "M1", hitDelay = 0.332, window = 0.125 },
-	["71676634048602"] = { name = "4thM1", kind = "M1", hitDelay = 0.332, window = 0.125 },
-	["102407060635393"] = { name = "M2", kind = "M2", hitDelay = 0.30, window = 0.125 },
-	["107394966937565"] = { name = "M2EHit", kind = "M2", hitDelay = 0.30, window = 0.125 },
-	["88619229552579"] = { name = "M2Success", kind = "M2", hitDelay = 0.30, window = 0.125 },
+	-- Kure (flat 0.32)
+	["82904229252991"] = { name = "1stM1", kind = "M1", hitDelay = 0.32, window = 0.15 },
+	["103732110215321"] = { name = "2ndM1", kind = "M1", hitDelay = 0.32, window = 0.15 },
+	["103964436023727"] = { name = "3rdM1", kind = "M1", hitDelay = 0.32, window = 0.15 },
+	["71676634048602"] = { name = "4thM1", kind = "M1", hitDelay = 0.32, window = 0.15 },
+	["102407060635393"] = { name = "M2", kind = "M2", hitDelay = 0.32, window = 0.15 },
+	["107394966937565"] = { name = "M2EHit", kind = "M2", hitDelay = 0.32, window = 0.15 },
+	["88619229552579"] = { name = "M2Success", kind = "M2", hitDelay = 0.32, window = 0.15 },
 	["92787945841620"] = { name = "2ndEHit", kind = "EHit", hitDelay = 0.30, window = 0.125 },
 	-- MuayThai (CombatConfig M1HitboxDelay=0.3 flat, no per-step offsets; M2=0.6)
 	-- Folder IDs confirmed; 1stM1 live-seen on sugarsku1lz (len=1.0)

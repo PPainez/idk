@@ -1008,36 +1008,44 @@ return function(ctx)
 		end
 	end
 
-	-- Contact timing from CombatConfig.GetScaledStyleM1HitboxDelay (live-scraped).
-	-- Capoeira: 1st 0.362 · 2nd 0.442 · 3rd 0.362 · 4th 0.292 (offsets matter a lot).
+	-- Contact timing = CombatConfig M1HitboxDelay + M1HitboxDelayOffsets (live place scrape).
+	-- Verified in-server next to slugger/muaythai spam + full GetStyleConfig dump.
 	local STYLE_M1_STEPS = {
 		-- [style] = { 1st, 2nd, 3rd, 4th } seconds to hitbox
-		default = { 0.332, 0.332, 0.332, 0.332 },
-		basic = { 0.352, 0.352, 0.352, 0.352 },
-		boxing = { 0.352, 0.352, 0.352, 0.392 },
-		capoeira = { 0.362, 0.442, 0.362, 0.292 },
-		hakari = { 0.452, 0.472, 0.452, 0.502 },
-		karate = { 0.290, 0.327, 0.402, 0.477 },
-		kure = { 0.332, 0.332, 0.332, 0.332 },
-		-- live config: flat 0.30 (no step offsets)
-		muaythai = { 0.30, 0.30, 0.30, 0.30 },
-		-- live scan Cramless + config base 0.2 + off 0.30/0.25/0.25/0.17
-		slugger = { 0.50, 0.45, 0.45, 0.37 },
-		striker = { 0.332, 0.332, 0.332, 0.332 },
-		wrestling = { 0.332, 0.332, 0.332, 0.332 },
+		default = { 0.32, 0.32, 0.32, 0.32 },
+		basic = { 0.34, 0.34, 0.34, 0.34 }, -- 0.32+0.02
+		boxing = { 0.34, 0.34, 0.34, 0.38 }, -- 0.32+0.02/0.02/0.02/0.06
+		capoeira = { 0.35, 0.43, 0.35, 0.28 }, -- 0.33+0.02/0.10/0.02/-0.05
+		hakari = { 0.44, 0.46, 0.44, 0.49 }, -- 0.28+0.16/0.18/0.16/0.21
+		karate = { 0.277, 0.315, 0.39, 0.465 }, -- 0.24+0.0375/0.075/0.15/0.225
+		kure = { 0.32, 0.32, 0.32, 0.32 },
+		muaythai = { 0.30, 0.30, 0.30, 0.30 }, -- flat (live sugarsku1lz M1 string)
+		slugger = { 0.50, 0.45, 0.45, 0.37 }, -- 0.2+0.30/0.25/0.25/0.17 (live Cramless)
+		striker = { 0.32, 0.32, 0.32, 0.32 },
+		wild = { 0.32, 0.32, 0.32, 0.32 },
+		wrestling = { 0.32, 0.32, 0.32, 0.32 },
+		wingchun = { 0.28, 0.28, 0.28, 0.28 },
+		taekwondo = { 0.32, 0.32, 0.32, 0.32 },
+		bulky = { 0.32, 0.32, 0.32, 0.32 },
 	}
 	local STYLE_M2 = {
 		default = 0.30,
 		basic = 0.525,
 		boxing = 0.43,
-		capoeira = 0.45,
+		capoeira = 0.45, -- + M2HitboxDuration 0.32
 		hakari = 0.59,
 		karate = 0.4875,
-		kure = 0.30,
-		muaythai = 0.60, -- config M2HitboxDelay
-		slugger = 0.82, -- config M2HitboxDelay
+		kure = 0.32,
+		muaythai = 0.60,
+		slugger = 0.82,
 		striker = 0.30,
+		wild = 0.525,
 		wrestling = 0.525,
+		wingchun = 0.525,
+		taekwondo = 0.46,
+		bulky = 0.43,
+		skygaolang = 0.35,
+		variant = 0.35,
 	}
 
 	local combatConfigCache = nil
