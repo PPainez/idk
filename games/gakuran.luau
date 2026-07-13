@@ -2,7 +2,7 @@
     xanhub | Gakuran
 
     Featured edition for (学乱) Gakuran.
-    Combat · Visuals ESP · Self · Rhythm · QOL (basketball + util) · Parry Builder · DevTools
+    Combat · Visuals ESP · Self · Rhythm · QOL (basketball + util + VC) · Parry Builder · DevTools
 ]]
 
 local GAKURAN_PLACE_ID = 128736949265057
@@ -122,6 +122,7 @@ local state = {
 	rhythm = {},
 	basketball = {},
 	combat = {},
+	vc = {}, -- for vc bypass state
 }
 
 local connections = Connection.new(library, state.connections)
@@ -173,6 +174,9 @@ local uiResult = safeLoadFeature("games/gakuran/modules/ui.luau")
 assert(uiResult, "[xanhub gakuran] UI module failed")
 ctx.columns = uiResult.columns
 ctx.tabs = uiResult.tabs
+
+-- Load VC Bypass (adds to QOL)
+local vcController = safeLoadFeature("games/gakuran/modules/vc_bypass.luau")
 
 local devtoolsController = safeLoadFeature("universal/modules/devtools.luau")
 local parryBuilder = safeLoadFeature("games/gakuran/modules/parry_builder.luau")
@@ -262,6 +266,7 @@ task.defer(function()
 
 	safeSetup("devtools", devtoolsController)
 	safeSetup("parry_builder", parryBuilder)
+	safeSetup("vc_bypass", vcController)  -- VC controller
 
 	if state.unloading then
 		return
