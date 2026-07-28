@@ -144,11 +144,12 @@ end
 -- Place-specific scripts. This is the usual table to edit.
 local FEATURED_PLACES = {
     [128736949265057] = { name = "Gakuran", file = "gakuran.luau" },
+    [891852901] = { name = "Greenville", file = "greenville.luau" },
 }
 
 -- Optional universe-wide scripts. Useful when one game has several places.
 local FEATURED_UNIVERSES = {
-    -- [1234567890] = {name = "Example Universe", file = "example.luau"},
+    [371263894] = { name = "Greenville", file = "greenville.luau" },
 }
 
 local Players = game:GetService("Players")
